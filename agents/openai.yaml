@@ -1,0 +1,4 @@
+interface:
+  display_name: "Issue to Merge"
+  short_description: "Take GitHub Issues through reviewed merge"
+  default_prompt: "Use $issue-to-merge to resolve these named GitHub Issues sequentially through isolated implementation, bounded review, PR feedback, merge, and cleanup."
