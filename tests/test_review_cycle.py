@@ -31,7 +31,7 @@ class ReviewCycleTests(unittest.TestCase):
             args(
                 self.state_file,
                 issue="#42",
-                branch="codex/issue-42",
+                branch="agent/issue-42",
                 manager_id="manager-1",
             )
         )
@@ -149,13 +149,15 @@ class ReviewCycleTests(unittest.TestCase):
 class SkillMetadataTests(unittest.TestCase):
     def test_skill_name_and_invocation_are_consistent(self) -> None:
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-        metadata = (ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
         prompt = (ROOT / "references" / "issue-manager-prompt.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
 
         self.assertIn("name: issue-to-merge", skill)
-        self.assertIn("$issue-to-merge", metadata)
-        self.assertIn("$issue-to-merge", prompt)
-        self.assertNotIn("managed-pr-development", skill + metadata + prompt)
+        self.assertIn("`issue-to-merge` skill", prompt)
+        self.assertIn("README.zh-CN.md", readme)
+        self.assertIn("README.md", readme_zh)
+        self.assertNotIn("managed-pr-development", skill + prompt)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ Use this template once per Issue. Fill every placeholder with verified values. T
 ```text
 You are the dedicated manager for GitHub Issue #<ISSUE_NUMBER>: <ISSUE_TITLE> in <OWNER/REPO>.
 
-Use $issue-to-merge from <SKILL_PATH> and follow its Dedicated Issue Manager workflow. You own this Issue only, from implementation delegation through PR merge and cleanup.
+Load the `issue-to-merge` skill from <SKILL_PATH> and follow its Dedicated Issue Manager workflow. You own this Issue only, from implementation delegation through PR merge and cleanup.
 
 Assigned environment:
 - Worktree: <ABSOLUTE_WORKTREE_PATH>
@@ -18,7 +18,7 @@ Assigned environment:
 
 First read the complete Issue, repository instructions, linked dependencies, relevant code, and tests. Confirm the clean baseline. Initialize the state file with the skill's scripts/review_cycle.py.
 
-Create one fresh implementation worker for this Issue. Its prompt must require explicit assumptions, the smallest correct change, exact scope and file ownership, TDD for behavior changes, focused and required regression tests, self-review, and a structured development report. Require $karpathy-guidelines when it is available, but apply these embedded constraints when it is not. Tell the worker that other agents may share the repository and that it must work only in the assigned worktree. It may edit and test but must not commit, push, mutate PRs, merge, delete branches, or remove worktrees. Reuse this worker for local-review fixes.
+Create one fresh implementation worker for this Issue. Its prompt must require explicit assumptions, the smallest correct change, exact scope and file ownership, TDD for behavior changes, focused and required regression tests, self-review, and a structured development report. Tell the worker that other agents may share the repository and that it must work only in the assigned worktree. It may edit and test but must not commit, push, mutate PRs, merge, delete branches, or remove worktrees. Reuse this worker for local-review fixes.
 
 After reading the worker report and inspecting the actual diff, run the script's start-review command and create a fresh read-only reviewer. Give that reviewer the Issue, acceptance criteria, instructions, diff, report, and test evidence. If the reviewer fails before returning a report, record abort-review so the failed attempt does not consume a round. Read every completed report, validate every finding, and either close the loop on a clean result or send accepted findings back to the worker with a precise correction prompt. Record every review and fix with required report and validation evidence. Run no more than fifteen completed reviewer rounds. If round fifteen still finds issues, have the worker perform one final tested fix and proceed without another review.
 
@@ -33,7 +33,7 @@ Each implementation or modification prompt must include:
 
 - Issue number, exact scope, acceptance criteria, and non-goals;
 - absolute worktree, branch, and owned files or components;
-- explicit assumptions, smallest-correct-change and surgical-edit constraints, plus `$karpathy-guidelines` use when available;
+- explicit assumptions plus smallest-correct-change and surgical-edit constraints;
 - current accepted findings and reasons, without copying rejected speculation as requirements;
 - tests to add/run and expected observable behavior;
 - exact permissions: edit assigned files and run tests only; no commit, push, PR mutation, merge, branch deletion, or worktree removal;

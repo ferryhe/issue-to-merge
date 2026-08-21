@@ -20,7 +20,7 @@ The root controller owns only the ordered queue and cross-Issue coordination:
 
 1. Resolve the exact repository, Issue numbers, order, dependencies, default branch, and current default-branch status.
 2. Work on one Issue at a time. Do not start Issue N+1 until Issue N is merged, its branches are deleted, and the local default branch is updated from its remote tracking branch.
-3. For every Issue, create a fresh isolated worktree and `codex/` branch from the latest clean remote default branch, then spawn a **new dedicated issue-manager subagent**. The controller creates this environment; the manager owns it from verification onward. Never reuse a manager from another Issue.
+3. For every Issue, create a fresh isolated worktree and project-approved Issue branch (for example, `agent/issue-123`) from the latest clean remote default branch, then spawn a **new dedicated issue-manager subagent**. The controller creates this environment; the manager owns it from verification onward. Never reuse a manager from another Issue.
 4. Give the manager the prompt in [references/issue-manager-prompt.md](references/issue-manager-prompt.md), filled with the exact repository, Issue, branch, worktree, state-file, required checks, and authorization.
 5. Wait for the manager's evidence-backed completion report. Independently verify the merge and branch cleanup before advancing the queue.
 6. Report progress at least every 15 minutes and immediately report permissions failures, merge conflicts, failed required checks, ambiguous blocking feedback, or other decisions needing the user.
@@ -42,7 +42,7 @@ The manager owns one Issue from verification of its assigned branch/worktree thr
 ### 2. Dispatch implementation
 
 - Spawn one fresh worker subagent for this Issue. Reuse this same worker for all local-review fixes so it retains implementation context.
-- The worker prompt must require explicit assumptions, the smallest correct change, surgical file ownership, TDD for behavior changes, focused plus required regression tests, and evidence-backed success criteria. Require `$karpathy-guidelines` when that skill is available, but do not make its absence a blocker. State that other agents may share the repository and give the exact worktree and branch.
+- The worker prompt must require explicit assumptions, the smallest correct change, surgical file ownership, TDD for behavior changes, focused plus required regression tests, and evidence-backed success criteria. State that other agents may share the repository and give the exact worktree and branch.
 - The worker may edit assigned files and run local tests only. It must not commit, push, create or edit a PR, merge, delete a branch, or remove a worktree; those lifecycle operations belong to the manager.
 - Require a development report containing changed files, behavior delivered, assumptions, tests and exact results, unresolved risks, and the current commit/worktree state.
 - Read the report and inspect the actual diff and test evidence before starting review.
@@ -95,7 +95,7 @@ Do not treat an Issue as complete until:
 
 - its branch/worktree started from the latest clean remote default branch after the preceding Issue;
 - a fresh dedicated manager and fresh local worker were used;
-- the worker followed the required simplicity, surgical-change, TDD, and evidence rules; when available, it also used `$karpathy-guidelines`;
+- the worker followed the required simplicity, surgical-change, TDD, and evidence rules;
 - every local review round used a fresh non-editing reviewer and the script count never exceeded fifteen;
 - a fifteenth-round finding, if any, received exactly one final tested worker fix with no sixteenth review;
 - the PR moved from Draft to Ready for review;

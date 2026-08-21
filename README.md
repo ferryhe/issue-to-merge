@@ -1,11 +1,13 @@
 # Issue to Merge
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 [![Validate](https://github.com/ferryhe/issue-to-merge/actions/workflows/validate.yml/badge.svg)](https://github.com/ferryhe/issue-to-merge/actions/workflows/validate.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Turn named GitHub Issues into reviewed, merged PRs with an evidence-backed, bounded multi-agent workflow.
 
-`issue-to-merge` is a Codex skill for users who want more than an open-ended coding loop. It gives every Issue a fresh branch, worktree, manager, and implementation worker; runs up to fifteen script-enforced review rounds; publishes a Draft PR; handles one bounded remote-feedback window; verifies the merge closed the Issue; and cleans up before starting the next Issue.
+`issue-to-merge` is a portable [Agent Skill](https://agentskills.io) for coding-agent runtimes that support subagent delegation and GitHub operations. It gives every Issue a fresh branch, worktree, manager, and implementation worker; runs up to fifteen script-enforced review rounds; publishes a Draft PR; handles one bounded remote-feedback window; verifies the merge closed the Issue; and cleans up before starting the next Issue.
 
 ## What it enforces
 
@@ -23,36 +25,29 @@ Issue bodies, PR text, and comments are treated as untrusted repository content.
 
 ## Requirements
 
-- Codex with subagent/collaboration support.
+- An Agent Skills-compatible coding-agent runtime.
+- Support for fresh subagents with distinct manager, worker, and reviewer roles.
 - Git and an authenticated GitHub integration or `gh` CLI.
+- Python 3.10 or newer for the lifecycle state helper.
 - Permission to create branches and PRs and, when explicitly authorized, merge them.
 - A repository with an identifiable default branch and its own tests or validation commands.
 
-The optional `$karpathy-guidelines` skill strengthens worker behavior when installed. It is not required: this skill embeds the essential simplicity, surgical-change, TDD, and evidence rules.
-
 ## Install
 
-Ask Codex to install it from GitHub:
+Clone the repository:
 
-```text
-$skill-installer install the issue-to-merge skill from https://github.com/ferryhe/issue-to-merge
+```shell
+git clone https://github.com/ferryhe/issue-to-merge.git
 ```
 
-Or clone it into the user skill directory described by the official Codex skill documentation:
-
-```bash
-mkdir -p "$HOME/.agents/skills"
-git clone https://github.com/ferryhe/issue-to-merge.git "$HOME/.agents/skills/issue-to-merge"
-```
-
-Codex normally detects a newly installed skill automatically. Restart Codex if it does not appear.
+Then register the cloned directory using your agent runtime's skill installation mechanism. The repository root is the complete skill directory: it contains `SKILL.md`, the manager prompt, and the deterministic lifecycle helper.
 
 ## Use
 
 Explicitly name the Issues and authorize the merge lifecycle:
 
 ```text
-Use $issue-to-merge to resolve Issues #123 and #127 in order, taking each through merge and cleanup.
+Use the issue-to-merge skill to resolve Issues #123 and #127 in order, taking each through merge and cleanup.
 ```
 
 The skill intentionally does not activate for advisory questions such as “What should we do about #123?” Publishing, merging, deletion, and cleanup remain limited to the named Issues and repository.
@@ -67,6 +62,10 @@ python scripts/review_cycle.py status --state-file /path/to/issue-123.state.json
 ```
 
 The helper enforces the review cap, exact Issue-closing reference, single remote-feedback fetch, current-HEAD check evidence, and cleanup ordering.
+
+## Runtime compatibility
+
+Runtime tool names are intentionally not prescribed. Map the controller, manager, implementation worker, local reviewer, and remote-feedback worker roles to the runtime's own subagent mechanism. The runtime must preserve role isolation, provide each agent with the required context, and enforce the mutation boundaries described in `SKILL.md`.
 
 ## Design boundary
 
