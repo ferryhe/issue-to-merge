@@ -15,8 +15,11 @@
 - 每个 Issue 都使用全新的 manager 和 implementation worker。
 - 行为变更采用 TDD，并运行聚焦测试及仓库要求的测试。
 - 每轮本地审查都使用全新的只读 reviewer，最多十五轮。
+- 默认只把现实可复现、直接影响 Issue 验收要求的功能、流程、数据契约和错误处理问题作为 finding；不接受推测性加固或抽象。
 - PR 必须先处于 Draft 状态，再进入 Ready for review，并准确包含 `Closes #<issue>`。
 - 只有一个十分钟的远程反馈窗口，统一覆盖 checks、reviews、threads、Issue comments 和 Copilot feedback。
+- 远程 comments 必须通过与本地审核相同的 finding 标准，之后才能接受并修改。
+- 面向用户的进度和结果使用与用户一致的语言以及简短大白话；完整证据保留在内部报告中。
 - 不绕过分支保护；存在有效 blocker 时不得合并。
 - 必须验证 Issue 已关闭，并按顺序清理远程分支、worktree 和本地分支。
 - `scripts/review_cycle.py` 使用确定性的 JSON 状态机拒绝非法生命周期跳转。

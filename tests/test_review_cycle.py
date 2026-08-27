@@ -159,6 +159,43 @@ class SkillMetadataTests(unittest.TestCase):
         self.assertIn("README.md", readme_zh)
         self.assertNotIn("managed-pr-development", skill + prompt)
 
+    def test_review_policy_reaches_local_remote_and_user_facing_paths(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        prompt = (ROOT / "references" / "issue-manager-prompt.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+
+        policy = skill.split("## Default review policy", 1)[1].split(
+            "## User-facing communication", 1
+        )[0]
+        self.assertIn("realistically reproducible", policy)
+        self.assertIn("functionality, workflow, a data contract, or error handling", policy)
+        self.assertIn("numbered Issue acceptance criterion", policy)
+        self.assertIn("general security hardening", policy)
+        self.assertIn("speculative refactors", policy)
+        self.assertIn("No implementation or fix may introduce a security framework", policy)
+        self.assertIn("Required checks are separate merge gates, not findings", policy)
+
+        local_review = skill.split("### 3. Run the bounded local-review loop", 1)[1].split(
+            "### 4. Publish", 1
+        )[0]
+        remote_review = skill.split("### 5. Handle one remote-feedback window", 1)[1].split(
+            "### 6. Merge", 1
+        )[0]
+        self.assertIn("default review policy", local_review)
+        self.assertIn("same numbered acceptance criteria", remote_review)
+        self.assertIn("same realistic-reproduction", remote_review)
+        self.assertIn("do not classify them as findings", remote_review)
+
+        self.assertIn("default review policy supplied to local reviewers", prompt)
+        self.assertIn("<EXACT_TOP_LEVEL_USER_INSTRUCTION_OR_NONE>", prompt)
+        self.assertIn("must not introduce a security framework", prompt)
+        self.assertIn("Required-check results stay with the manager", prompt)
+        self.assertIn("match the user's language", skill)
+        self.assertIn("match the user's language", prompt)
+        self.assertIn("Remote comments pass through the same finding policy", readme)
+        self.assertIn("远程 comments 必须通过与本地审核相同的 finding 标准", readme_zh)
+
 
 if __name__ == "__main__":
     unittest.main()
