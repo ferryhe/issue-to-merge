@@ -40,10 +40,10 @@ Keep detailed evidence in internal reports and the state record. For every user-
 
 The root controller owns only the ordered queue and cross-Issue coordination:
 
-1. Resolve the exact repository, Issue numbers, order, dependencies, default branch, and current default-branch status.
+1. Resolve the exact repository, Issue numbers, order, dependencies, default branch, and current default-branch status. Before creating a worktree, search open and closed PRs plus remote branches for the Issue number, Issue URL, and distinctive title keywords, then inspect every plausible match. If equivalent work is active or a closed unmerged PR already contains the needed implementation, do not create a duplicate; report the evidence and ask the user whether to continue or reuse that work. If it is already merged, verify the Issue state and treat the queue item as already satisfied instead of opening another PR. Record why any other plausible match is not equivalent before proceeding.
 2. Work on one Issue at a time. Do not start Issue N+1 until Issue N is merged, its branches are deleted, and the local default branch is updated from its remote tracking branch.
 3. For every Issue, create a fresh isolated worktree and project-approved Issue branch (for example, `agent/issue-123`) from the latest clean remote default branch, then spawn a **new dedicated issue-manager subagent**. The controller creates this environment; the manager owns it from verification onward. Never reuse a manager from another Issue.
-4. Give the manager the prompt in [references/issue-manager-prompt.md](references/issue-manager-prompt.md), filled with the exact repository, Issue, branch, worktree, state-file, required checks, authorization, and the user's exact review-policy override or `none`.
+4. Give the manager the prompt in [references/issue-manager-prompt.md](references/issue-manager-prompt.md), filled with the exact repository, Issue, branch, worktree, state-file, duplicate-work search evidence, required checks, authorization, and the user's exact review-policy override or `none`.
 5. Wait for the manager's evidence-backed completion report. Independently verify the merge and branch cleanup before advancing the queue.
 6. Report progress at least every 15 minutes and immediately report permissions failures, merge conflicts, failed required checks, ambiguous blocking feedback, or other decisions needing the user. Follow the user-facing communication rules above.
 7. When reminder/automation support is available, declare the delivery scope and start one 15-minute progress heartbeat before the first Issue. Persist its identifier and active/stopped state in the project status mechanism, then stop it and verify removal when the queue finishes or the user stops the program.
@@ -58,6 +58,7 @@ The manager owns one Issue from verification of its assigned branch/worktree thr
 
 - Read the full Issue, linked dependencies, repository instructions, relevant code, tests, and current CI expectations.
 - Confirm the assigned worktree is clean and the branch starts at the supplied latest remote default-branch SHA.
+- For a bug Issue, verify the premise before translating acceptance criteria: reproduce the reported behavior on the assigned default-branch baseline and inspect the relevant code history with targeted `git blame`, `git log -L`, or `git log -S` evidence to determine whether the behavior is intentional or the Issue is stale. If the problem is not reproducible or conflicts with current documented intent, stop before implementation and return the evidence to the controller; do not invent a change merely to satisfy stale wording.
 - Translate the Issue into numbered acceptance criteria (`AC-1`, `AC-2`, ...), file ownership, non-goals, and required validation. Record any explicit user-requested review-policy override; otherwise use the default review policy unchanged.
 - Initialize the state script before dispatching implementation.
 
@@ -65,8 +66,10 @@ The manager owns one Issue from verification of its assigned branch/worktree thr
 
 - Spawn one fresh worker subagent for this Issue. Reuse this same worker for all local-review fixes so it retains implementation context.
 - The worker prompt must require explicit assumptions, the smallest correct change, surgical file ownership, TDD for behavior changes, focused plus required regression tests, and evidence-backed success criteria. Every implementation and later fix must trace directly to at least one numbered acceptance criterion and must not introduce a security framework or speculative abstraction. State that other agents may share the repository and give the exact worktree and branch.
+- For a bug fix, require the worker to search for sibling call sites or implementations with the same defect shape. The smallest correct change is the smallest complete fix for the mapped acceptance criterion: repair every affected in-scope sibling and list each inspected exclusion with evidence that it is unaffected or outside that criterion. Do not broaden the change to merely similar code.
+- For a bug fix, require red/green regression evidence: the new regression test must fail for the expected reason on the pre-fix behavior or with the fix temporarily removed, then pass with the fix applied. Feature-only work does not require this pre-fix failure proof.
 - The worker may edit assigned files and run local tests only. It must not commit, push, create or edit a PR, merge, delete a branch, or remove a worktree; those lifecycle operations belong to the manager.
-- Require a development report containing changed files, behavior delivered, assumptions, tests and exact results, unresolved risks, and the current commit/worktree state.
+- Require a development report containing changed files, behavior delivered, assumptions, inspected sibling sites and exclusions, tests with exact red/green results when applicable, unresolved risks, and the current commit/worktree state.
 - Read the report and inspect the actual diff and test evidence before starting review.
 
 ### 3. Run the bounded local-review loop
@@ -95,11 +98,12 @@ A review round means one completed reviewer report. Worker fixes, test runs, sta
 
 - Wait until 10 full minutes have elapsed after Ready for review. During this window, monitor required checks without shortening the wait.
 - Fetch GitHub checks, reviews, inline review threads, Issue comments, and Copilot comments once after the window, then record that fetch with the state script. It rejects an early or second fetch. Keep required-check results separate as merge-gate evidence; do not classify them as findings.
+- Whenever a required check fails after PR publication, attribute the failure before attempting a repair. Compare its logs and failing scope with the Issue diff; when attribution remains uncertain, reproduce the same check on a clean checkout of the supplied default-branch baseline. Re-run a failed check at most once, and only when the evidence indicates a transient infrastructure failure or genuine flake. Send only an Issue-caused, safely repairable failure to the worker permitted in the current phase; record baseline or infrastructure evidence and escalate any failure that still blocks the merge.
 - Spawn one **new remote-feedback worker**—not the local implementation worker—and give it the same numbered acceptance criteria, non-goals, exact user override or `none`, and default review policy used by local reviewers. Evaluate every fetched review, thread, Issue comment, and Copilot comment as `valid`, `invalid`, or `ambiguous`, with reasons. A comment is `valid` only when it passes the same realistic-reproduction, allowed-category, acceptance-mapping, and smallest-correction tests as a local finding. Policy-excluded or unmapped comments are `invalid`; use `ambiguous` only for a plausible blocker that lacks enough evidence to decide safely. The worker may implement only confirmed-safe `valid` changes, must not introduce a security framework or speculative abstraction, and must report modifications and targeted test results.
 - The manager reads that report, independently rechecks each disposition against the shared policy, and verifies the diff. Ambiguous or unsafe blocking feedback must be recorded as blocked and reported to the user in plain language instead of guessed. After an explicit user/controller decision, record the audited resolution as either `merge_ready` or `remote_fix`; do not refetch comments.
 - The remote worker may edit assigned files and run tests only; it must not commit, push, mutate the PR, merge, or clean branches/worktrees. The manager inspects its changes and owns all Git/GitHub mutations.
 - If the remote worker makes a material change, run the relevant tests, record the validation evidence, commit, and push. **Do not reset the timestamp, wait another 10 minutes, spawn another reviewer, or fetch remote feedback again.** Merge as soon as repository-required checks and branch protections allow.
-- If that push fails a required check and the failure is safely repairable, send the failure evidence back to the same remote worker, validate the repair, and let the manager record and push another HEAD. This repair loop is driven only by required-check failures; it never opens another feedback window. Escalate when the failure cannot be safely repaired.
+- If that push fails a required check, apply the attribution rule above. When it is confirmed Issue-caused and safely repairable, send the failure evidence back to the same remote worker, validate the repair, and let the manager record and push another HEAD. This repair loop is driven only by required-check failures; it never opens another feedback window.
 - If no change is needed, merge after required checks pass. Copilot comments are suggestions, not automatic requirements.
 
 This single-window rule is an explicit exception to workflows that normally restart a feedback timer after a push.
@@ -116,8 +120,11 @@ This single-window rule is an explicit exception to workflows that normally rest
 Do not treat an Issue as complete until:
 
 - its branch/worktree started from the latest clean remote default branch after the preceding Issue;
+- the controller found no equivalent active or merged work before creating the Issue branch, or explicitly resolved the match without duplicating it;
 - a fresh dedicated manager and fresh local worker were used;
+- each bug premise was reproduced on the supplied baseline and checked against relevant history before implementation, or the manager stopped and escalated contrary evidence;
 - the worker followed the required simplicity, surgical-change, TDD, and evidence rules;
+- each bug fix included expected pre-fix failure and post-fix pass evidence, and every same-shaped sibling site was fixed or explicitly excluded with acceptance-mapped evidence;
 - numbered acceptance criteria were used, every accepted local or remote finding passed the default review policy, and every fix mapped directly to an acceptance criterion;
 - no implementation or fix introduced a security framework or speculative abstraction;
 - every local review round used a fresh non-editing reviewer and the script count never exceeded fifteen;
@@ -126,6 +133,7 @@ Do not treat an Issue as complete until:
 - its body contained `Closes #<issue-number>`;
 - the state script enforced the single 10-minute remote-feedback window and a new remote worker evaluated Copilot and other remote comments;
 - any remote fix passed targeted validation, with no second wait or refetch;
+- every failed required check was attributed before repair, and a retry without code changes occurred at most once with evidence of a genuine flake or transient infrastructure failure;
 - repository-required checks passed and no known valid blocker remained;
 - the merge closed the Issue and that closed state was independently verified;
 - remote branch deletion, worktree removal, local branch deletion, and refreshed default branch were verified in that order;
