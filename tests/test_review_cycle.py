@@ -196,6 +196,56 @@ class SkillMetadataTests(unittest.TestCase):
         self.assertIn("Remote comments pass through the same finding policy", readme)
         self.assertIn("远程 comments 必须通过与本地审核相同的 finding 标准", readme_zh)
 
+    def test_waste_prevention_guards_reach_their_owning_roles(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        prompt = (ROOT / "references" / "issue-manager-prompt.md").read_text(
+            encoding="utf-8"
+        )
+
+        controller = skill.split("## Program Controller", 1)[1].split(
+            "## Dedicated Issue Manager", 1
+        )[0]
+        scope = skill.split("### 1. Establish scope", 1)[1].split(
+            "### 2. Dispatch implementation", 1
+        )[0]
+        implementation = skill.split("### 2. Dispatch implementation", 1)[1].split(
+            "### 3. Run the bounded local-review loop", 1
+        )[0]
+        remote = skill.split("### 5. Handle one remote-feedback window", 1)[1].split(
+            "### 6. Merge and clean up", 1
+        )[0]
+        manager_template = prompt.split("```text", 1)[1].split("```", 1)[0]
+        worker_fields = prompt.split("## Mandatory worker-prompt fields", 1)[1].split(
+            "## Mandatory reviewer-prompt fields", 1
+        )[0]
+
+        self.assertIn("search open and closed PRs plus remote branches", controller)
+        self.assertIn("do not create a duplicate", controller)
+        self.assertIn("reproduce the reported behavior", scope)
+        self.assertIn("git log -S", scope)
+        self.assertIn("intentional or the Issue is stale", scope)
+        self.assertIn("sibling call sites", implementation)
+        self.assertIn("pre-fix behavior", implementation)
+        self.assertIn("Feature-only work does not require", implementation)
+        self.assertIn("Do not broaden the change", implementation)
+        self.assertIn("attribute the failure before attempting a repair", remote)
+        self.assertIn("Issue diff", remote)
+        self.assertIn("default-branch baseline", remote)
+        self.assertIn("transient infrastructure failure", remote)
+        self.assertIn("Re-run a failed check at most once", remote)
+
+        self.assertIn("<PR_AND_REMOTE_BRANCH_SEARCH_EVIDENCE>", manager_template)
+        self.assertIn("reproduce the reported behavior", manager_template)
+        self.assertIn("same-shaped sibling call sites", manager_template)
+        self.assertIn("Feature-only work is exempt", manager_template)
+        self.assertIn("attribute it before repair", manager_template)
+        self.assertIn("Re-run once without a code change", manager_template)
+
+        self.assertIn("same-shaped sibling sites to inspect", worker_fields)
+        self.assertIn("expected pre-fix failure and post-fix pass evidence", worker_fields)
+        self.assertIn("feature-only work is exempt", worker_fields)
+        self.assertNotIn("attribute it before repair", worker_fields)
+
 
 if __name__ == "__main__":
     unittest.main()
