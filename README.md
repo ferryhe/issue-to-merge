@@ -15,8 +15,11 @@ Turn named GitHub Issues into reviewed, merged PRs with an evidence-backed, boun
 - Fresh manager and implementation agents for every Issue.
 - TDD for behavior changes and focused plus repository-required tests.
 - Fresh read-only reviewer for every local review round, capped at fifteen.
+- By default, findings are limited to realistically reproducible functionality, workflow, data-contract, and error-handling problems that directly affect an Issue acceptance criterion; speculative hardening and abstractions are excluded.
 - Draft PR before Ready for review, with an exact `Closes #<issue>` reference.
 - One ten-minute remote-feedback window covering checks, reviews, threads, comments, and Copilot feedback.
+- Remote comments pass through the same finding policy as local reviews before any change is accepted.
+- User-facing updates match the user's language and use short, plain wording; detailed evidence remains in internal reports.
 - No branch-protection bypass and no merge while a valid blocker remains.
 - Verified Issue closure and ordered branch/worktree cleanup.
 - A deterministic JSON state machine in `scripts/review_cycle.py` that rejects invalid lifecycle transitions.
