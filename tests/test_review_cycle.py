@@ -128,6 +128,10 @@ class ReviewCycleTests(unittest.TestCase):
         review_cycle.cmd_verify_issue_closed(
             args(self.state_file, evidence="Issue state is CLOSED")
         )
+        with self.assertRaisesRegex(SystemExit, "complete cleanup before recording task closure"):
+            review_cycle.cmd_mark_task_closed(
+                args(self.state_file, evidence="Issue task closed")
+            )
         review_cycle.cmd_record_remote_branch(
             args(self.state_file, evidence="remote branch absent")
         )
@@ -140,10 +144,21 @@ class ReviewCycleTests(unittest.TestCase):
         review_cycle.cmd_mark_cleaned(
             args(self.state_file, base_branch_evidence="default branch contains def456")
         )
+        review_cycle.cmd_mark_task_closed(
+            args(self.state_file, evidence="Issue task closed and resources released")
+        )
+        with self.assertRaisesRegex(SystemExit, "Issue task closure is already recorded"):
+            review_cycle.cmd_mark_task_closed(
+                args(self.state_file, evidence="duplicate closure proof")
+            )
 
         state = self.load()
-        self.assertEqual(state["stage"], "cleaned")
+        self.assertEqual(state["stage"], "task_closed")
         self.assertEqual(state["cleanup"]["base_branch"]["evidence"], "default branch contains def456")
+        self.assertEqual(
+            state["task_close"]["evidence"],
+            "Issue task closed and resources released",
+        )
 
 
 class SkillMetadataTests(unittest.TestCase):
@@ -203,7 +218,7 @@ class SkillMetadataTests(unittest.TestCase):
         )
 
         controller = skill.split("## Program Controller", 1)[1].split(
-            "## Dedicated Issue Manager", 1
+            "## Issue Task Manager", 1
         )[0]
         scope = skill.split("### 1. Establish scope", 1)[1].split(
             "### 2. Dispatch implementation", 1
@@ -245,6 +260,57 @@ class SkillMetadataTests(unittest.TestCase):
         self.assertIn("expected pre-fix failure and post-fix pass evidence", worker_fields)
         self.assertIn("feature-only work is exempt", worker_fields)
         self.assertNotIn("attribute it before repair", worker_fields)
+
+    def test_each_issue_uses_one_closable_task_and_fresh_reviewers(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        prompt = (ROOT / "references" / "issue-manager-prompt.md").read_text(
+            encoding="utf-8"
+        )
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+
+        controller = skill.split("## Program Controller", 1)[1].split(
+            "## Issue Task Manager", 1
+        )[0]
+        implementation = skill.split("### 2. Dispatch implementation", 1)[1].split(
+            "### 3. Run the bounded local-review loop", 1
+        )[0]
+        local_review = skill.split("### 3. Run the bounded local-review loop", 1)[
+            1
+        ].split("### 4. Publish", 1)[0]
+        remote = skill.split("### 5. Handle one remote-feedback window", 1)[1].split(
+            "### 6. Merge and clean up", 1
+        )[0]
+        quality = skill.split("## Quality Gates", 1)[1].split(
+            "## User-facing progress shape", 1
+        )[0]
+        manager_template = prompt.split("```text", 1)[1].split("```", 1)[0]
+
+        self.assertIn("fresh top-level Issue task", controller)
+        self.assertIn("root agent is the Issue manager", controller)
+        self.assertIn("close the completed Issue task", controller)
+        self.assertIn("before starting the next Issue", controller)
+        self.assertNotIn("spawn a **new dedicated issue-manager subagent**", controller)
+
+        self.assertIn("one fresh worker subagent", implementation)
+        self.assertIn("same worker for the entire Issue", implementation)
+        self.assertIn("release that one-shot reviewer", local_review)
+        self.assertIn("Never reuse a local reviewer", local_review)
+        self.assertIn("same Issue worker", remote)
+        self.assertNotIn("new remote-feedback worker", remote)
+        self.assertIn("Issue task was closed", quality)
+
+        self.assertIn("top-level task", manager_template)
+        self.assertIn("Do not create another manager agent", manager_template)
+        self.assertIn("same implementation worker for the entire Issue", manager_template)
+        self.assertIn("release that one-shot reviewer", manager_template)
+        self.assertIn("same worker", manager_template)
+        self.assertIn("mark-task-closed", prompt)
+
+        self.assertIn("top-level task", readme)
+        self.assertIn("关闭当前 Issue 任务", readme_zh)
+
+        self.assertNotIn("close_agent", skill + prompt)
 
 
 if __name__ == "__main__":

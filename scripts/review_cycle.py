@@ -124,6 +124,7 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
             "local_branch": None,
             "base_branch": None,
         },
+        "task_close": None,
         "history": [],
     }
     add_event(state, "initialized")
@@ -430,6 +431,21 @@ def cmd_mark_cleaned(args: argparse.Namespace) -> dict[str, Any]:
     return state
 
 
+def cmd_mark_task_closed(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    if state.get("task_close") is not None:
+        fail("Issue task closure is already recorded")
+    if state["stage"] != "cleaned" or state["cleanup"]["base_branch"] is None:
+        fail("complete cleanup before recording task closure")
+    evidence = require_text(args.evidence, "evidence")
+    state["task_close"] = {"at": now_utc(), "evidence": evidence}
+    state["stage"] = "task_closed"
+    add_event(state, "task_closed", evidence=evidence)
+    save_state(path, state)
+    return state
+
+
 def cmd_status(args: argparse.Namespace) -> dict[str, Any]:
     return load_state(state_path(args))
 
@@ -487,7 +503,7 @@ def build_parser() -> argparse.ArgumentParser:
     fetched.add_argument("--snapshot", required=True)
     fetched.set_defaults(handler=cmd_mark_feedback_fetched)
 
-    assessment = commands.add_parser("record-remote-assessment", help="record the one remote worker report")
+    assessment = commands.add_parser("record-remote-assessment", help="record the one remote-feedback assessment")
     add_state_file(assessment)
     assessment.add_argument("--outcome", choices=("clean", "changes", "blocked"), required=True)
     assessment.add_argument("--report", required=True)
@@ -542,6 +558,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_state_file(cleaned)
     cleaned.add_argument("--base-branch-evidence", required=True)
     cleaned.set_defaults(handler=cmd_mark_cleaned)
+
+    task_closed = commands.add_parser("mark-task-closed", help="record Issue task closure after cleanup")
+    add_state_file(task_closed)
+    task_closed.add_argument("--evidence", required=True)
+    task_closed.set_defaults(handler=cmd_mark_task_closed)
 
     status = commands.add_parser("status", help="print current state")
     add_state_file(status)

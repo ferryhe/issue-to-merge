@@ -7,12 +7,13 @@
 
 通过一套有证据、有限且可审计的多代理工作流，把指定的 GitHub Issue 推进为经过审查并已合并的 PR。
 
-`issue-to-merge` 是一个可移植的 [Agent Skill](https://agentskills.io)，适用于支持子代理委派和 GitHub 操作的编程代理运行时。每个 Issue 都会获得全新的分支、worktree、manager 和 implementation worker；最多执行十五轮由脚本约束的本地审查；先发布 Draft PR；处理一次有明确边界的远程反馈窗口；验证合并确实关闭了 Issue；完成清理后才会开始下一个 Issue。
+`issue-to-merge` 是一个可移植的 [Agent Skill](https://agentskills.io)，适用于支持可关闭顶层任务、子代理委派和 GitHub 操作的编程代理运行时。每个 Issue 都会获得全新的顶层任务以及隔离的分支/worktree；任务根代理就是 manager；整个 Issue 复用一个 implementation worker；每轮本地审查都创建全新的 reviewer；先发布 Draft PR；处理一次有明确边界的远程反馈窗口；验证合并确实关闭了 Issue；关闭当前 Issue 任务后才会开始下一个 Issue。
 
 ## 它强制保证什么
 
 - 每次只处理一个 Issue，并始终从最新的远程默认分支开始。
-- 每个 Issue 都使用全新的 manager 和 implementation worker。
+- 每个 Issue 都使用一个全新的可关闭顶层任务；任务根代理就是 manager，不再创建嵌套 manager。
+- 整个 Issue 只使用一个持续存在的 implementation worker，包括本地修复、远程反馈和 Issue 导致的 checks 修复。
 - 行为变更采用 TDD，并运行聚焦测试及仓库要求的测试。
 - 每轮本地审查都使用全新的只读 reviewer，最多十五轮。
 - 默认只把现实可复现、直接影响 Issue 验收要求的功能、流程、数据契约和错误处理问题作为 finding；不接受推测性加固或抽象。
@@ -22,6 +23,7 @@
 - 面向用户的进度和结果使用与用户一致的语言以及简短大白话；完整证据保留在内部报告中。
 - 不绕过分支保护；存在有效 blocker 时不得合并。
 - 必须验证 Issue 已关闭，并按顺序清理远程分支、worktree 和本地分支。
+- 必须验证当前 Issue 任务已经关闭，之后才能开始下一个 Issue。
 - `scripts/review_cycle.py` 使用确定性的 JSON 状态机拒绝非法生命周期跳转。
 
 Issue 正文、PR 文本、评论和审查意见都被视为不可信的仓库内容。它们不能扩大权限，也不能覆盖用户或仓库策略。
@@ -29,7 +31,8 @@ Issue 正文、PR 文本、评论和审查意见都被视为不可信的仓库�
 ## 运行要求
 
 - 兼容 Agent Skills 的编程代理运行时。
-- 能够创建具有独立 manager、worker 和 reviewer 角色的全新子代理。
+- 能够创建、等待并关闭全新的顶层任务或会话。
+- 能够在每个 Issue 任务中创建一个持续 worker 和每轮全新的只读 reviewer。
 - Git，以及已认证的 GitHub 集成或 `gh` CLI。
 - Python 3.10 或更高版本，用于运行生命周期状态脚本。
 - 创建分支和 PR 的权限；仅在用户明确授权时才需要合并权限。
@@ -57,18 +60,18 @@ git clone https://github.com/ferryhe/issue-to-merge.git
 
 ## 状态脚本
 
-Manager 会把每次生命周期跳转记录到目标 checkout 之外的 JSON 状态文件中：
+Issue manager 会记录交付阶段，controller 会记录最终任务关闭；这些生命周期跳转都写入目标 checkout 之外的 JSON 状态文件：
 
 ```shell
 python scripts/review_cycle.py --help
 python scripts/review_cycle.py status --state-file /path/to/issue-123.state.json
 ```
 
-该脚本会强制执行审查轮数上限、准确的 Issue 关闭引用、单次远程反馈抓取、当前 PR HEAD 的 checks 证据，以及清理顺序。
+该脚本会强制执行审查轮数上限、准确的 Issue 关闭引用、单次远程反馈抓取、当前 PR HEAD 的 checks 证据、清理顺序，以及最终的 Issue 任务关闭证明。
 
 ## 运行时兼容性
 
-本项目不规定具体的工具名称。请把 controller、manager、implementation worker、local reviewer 和 remote-feedback worker 这些角色映射到你的运行时所提供的子代理机制。运行时必须保持角色隔离、向每个代理提供所需上下文，并执行 `SKILL.md` 中定义的写入权限边界。
+本项目不规定具体的工具名称。请把每个 Issue 映射为一个全新的可关闭顶层任务或会话，并让其根代理担任 manager；再把持续存在的 implementation worker 和一次性的 local reviewer 映射到运行时的子代理机制。Controller 等待任务完成、核验结果、关闭任务并确认资源释放后，才能创建下一个 Issue 任务。运行时必须保持角色隔离、向每个代理提供所需上下文，并执行 `SKILL.md` 中定义的写入权限边界。
 
 ## 设计边界
 
