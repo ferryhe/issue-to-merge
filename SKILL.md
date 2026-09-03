@@ -197,4 +197,4 @@ Manager, branch, commit, review-count, check, and raw evidence details remain in
 - Merging while required checks fail, a valid blocker is known, or branch protection would need bypassing.
 - Merging a PR that does not close the Issue, or advancing before GitHub confirms the Issue is closed.
 - Starting the next Issue before merge, branch/worktree cleanup, and closure of the current Issue task are verified.
-- Assuming every Issue has a code change. Some acceptance criteria may already be satisfied on the default branch, making the gap verification rather than implementation. Audit the latest `origin/main` before creating the worktree and classify the Issue as verification-only when appropriate.
+- Assuming every Issue has a code change. Some acceptance criteria may already be satisfied on the default branch, making the gap verification rather than implementation. Audit the latest remote default branch before creating the worktree and classify the Issue as verification-only when appropriate.
