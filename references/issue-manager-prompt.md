@@ -91,6 +91,20 @@ python <SCRIPT> record-worktree-removed --state-file <STATE> --evidence <EVIDENC
 python <SCRIPT> record-local-branch-deleted --state-file <STATE> --evidence <EVIDENCE>
 python <SCRIPT> mark-cleaned --state-file <STATE> --base-branch-evidence <EVIDENCE>
 python <SCRIPT> mark-task-closed --state-file <STATE> --evidence <TASK_CLOSE_AND_RESOURCE_RELEASE_EVIDENCE>
+python <SCRIPT> record-decision --state-file <STATE> --point <DECISION_POINT> --outcome <RESULT> --reason <EVIDENCE>
+python <SCRIPT> show-decisions --state-file <STATE>
 ```
 
 `mark-feedback-fetched` is intentionally unavailable until 600 seconds after `mark-ready` and can succeed only once. After a remote fix, do not call it again. The Issue task manager runs through `mark-cleaned`; after the manager's final report, the root controller closes the task, verifies resource release, and runs the final `mark-task-closed` command.
+
+## Decision log (record-decision)
+
+Keep an append-only `decisions.log` beside the state file by calling `record-decision` at every consequential fork. Each entry records the decision point, the outcome, and the concrete reason/evidence, so a later human can rebuild how the manager reached the current state. Required decision points:
+
+- every local-reviewer finding: `accept` or `reject`, with the policy reason (realistic reproduction, acceptance-criterion mapping) for each;
+- every completed review round: `pass` or `changes`, with the summary that justified the verdict;
+- the round-fifteen decision to ship the final tested-but-unreviewed fix: record the risk tradeoff and why it was accepted;
+- every fetched remote review, thread, Issue, or Copilot comment: `valid`, `invalid`, or `ambiguous`, with the classification evidence;
+- every blocked-feedback resolution: the user/controller `merge` or `changes` decision and its evidence.
+
+Use `show-decisions` to read the log back for audit before returning the final report. The log is append-only and lives outside the checkout; never rewrite or delete it.
