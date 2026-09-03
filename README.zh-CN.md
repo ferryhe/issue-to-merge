@@ -72,7 +72,7 @@ python scripts/review_cycle.py status --state-file /path/to/issue-123.state.json
 
 ## 运行时兼容性
 
-本项目不规定具体的工具名称。请把每个 Issue 映射为一个全新的可关闭顶层任务或会话，并让其根代理担任 manager；再把持续存在的 implementation worker 和一次性的 local reviewer 映射到运行时的子代理机制。Controller 等待任务完成、核验结果、关闭任务并确认资源释放后，才能创建下一个 Issue 任务。运行时必须保持角色隔离、向每个代理提供所需上下文，并执行 `SKILL.md` 中定义的写入权限边界。
+本项目不规定具体的工具名称。请把每个 Issue 映射为一个全新的可关闭顶层任务或会话，并让其根代理担任 manager；再把持续存在的 implementation worker 和一次性的 local reviewer 映射到运行时的子代理机制。Controller 等待任务完成、核验结果、关闭任务并确认资源释放后，才能创建下一个 Issue 任务。运行时必须保持角色隔离、向每个代理提供所需上下文，并执行 `SKILL.md` 中定义的写入权限边界。在 Hermes Agent 上运行时，请参见 [references/hermes-runtime.md](references/hermes-runtime.md) 了解 Hermes 特定的适配说明。
 
 ## 设计边界
 

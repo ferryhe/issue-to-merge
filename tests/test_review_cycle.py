@@ -419,6 +419,24 @@ class SkillMetadataTests(unittest.TestCase):
         self.assertTrue(pattern_path.is_file())
         self.assertGreater(len(pattern_path.read_text(encoding="utf-8").strip()), 0)
 
+    def test_hermes_runtime_adaptation_is_documented_and_linked(self) -> None:
+        doc_path = ROOT / "references" / "hermes-runtime.md"
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+
+        self.assertTrue(doc_path.is_file())
+        self.assertGreater(len(doc_path.read_text(encoding="utf-8").strip()), 0)
+
+        runtime_compat = readme.split("## Runtime compatibility", 1)[1].split(
+            "## Design boundary", 1
+        )[0]
+        self.assertIn("hermes-runtime.md", runtime_compat)
+
+        runtime_compat_zh = readme_zh.split("## 运行时兼容性", 1)[1].split(
+            "## 设计边界", 1
+        )[0]
+        self.assertIn("hermes-runtime.md", runtime_compat_zh)
+
 
 if __name__ == "__main__":
     unittest.main()

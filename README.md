@@ -72,7 +72,7 @@ The helper enforces the review cap, exact Issue-closing reference, single remote
 
 ## Runtime compatibility
 
-Runtime tool names are intentionally not prescribed. Map each Issue to a fresh closable top-level task or session whose root agent is the manager. Inside it, map the persistent implementation worker and one-shot local reviewers to the runtime's subagent mechanism. The controller waits for the task, verifies its result, closes it, and verifies resource release before creating the next Issue task. The runtime must preserve role isolation, provide each agent with the required context, and enforce the mutation boundaries described in `SKILL.md`.
+Runtime tool names are intentionally not prescribed. Map each Issue to a fresh closable top-level task or session whose root agent is the manager. Inside it, map the persistent implementation worker and one-shot local reviewers to the runtime's subagent mechanism. The controller waits for the task, verifies its result, closes it, and verifies resource release before creating the next Issue task. The runtime must preserve role isolation, provide each agent with the required context, and enforce the mutation boundaries described in `SKILL.md`. When running on Hermes Agent, see [references/hermes-runtime.md](references/hermes-runtime.md) for the Hermes-specific adaptations.
 
 ## Design boundary
 
