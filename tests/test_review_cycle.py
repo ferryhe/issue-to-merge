@@ -406,6 +406,19 @@ class SkillMetadataTests(unittest.TestCase):
         for role in ("manager", "worker", "reviewer", "remote_worker"):
             self.assertIn(role, config)
 
+    def test_verification_only_delivery_is_a_first_class_terminal_state(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        pattern_path = ROOT / "references" / "acceptance-already-implemented-pattern.md"
+
+        quality = skill.split("## Quality Gates", 1)[1].split(
+            "## User-facing progress shape", 1
+        )[0]
+        self.assertIn("Code-change delivery", quality)
+        self.assertIn("Verification-only delivery", quality)
+
+        self.assertTrue(pattern_path.is_file())
+        self.assertGreater(len(pattern_path.read_text(encoding="utf-8").strip()), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
