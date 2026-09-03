@@ -1,5 +1,5 @@
 {
-  "_comment": "Role -> model mapping for the issue-to-merge skill. A null or empty value means the role falls back to the agent's own current model; a string value fixes that role to the named model. Cross-model review (worker and reviewer using different models) is optional, never required.",
+  "_comment": "Role -> model mapping for the issue-to-merge skill. A null value or a missing key means the role falls back to the agent's own current model; a string value (including an empty string) fixes that role to the named model. Cross-model review (worker and reviewer using different models) is optional, never required.",
   "manager": null,
   "worker": null,
   "reviewer": null,
