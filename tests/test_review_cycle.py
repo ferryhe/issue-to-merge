@@ -425,7 +425,23 @@ class SkillMetadataTests(unittest.TestCase):
         readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
 
         self.assertTrue(doc_path.is_file())
-        self.assertGreater(len(doc_path.read_text(encoding="utf-8").strip()), 0)
+        doc = doc_path.read_text(encoding="utf-8")
+        self.assertGreater(len(doc.strip()), 0)
+
+        # Issue #12 requires the document to actually cover the four Hermes runtime
+        # adaptations, not merely exist as an empty shell. Assert each section's
+        # key phrase is present so future edits cannot silently drop a section.
+        # 1. Flatten the role hierarchy (delegate_task does not support nesting).
+        self.assertIn("Flatten the role hierarchy", doc)
+        self.assertIn("does not support nesting", doc)
+        # 2. Respect the ~600s delegate timeout.
+        self.assertIn("600", doc)
+        self.assertIn("timeout", doc)
+        # 3. Bootstrap new commands from the worktree's state script.
+        self.assertIn("state script", doc)
+        self.assertIn("worktree", doc)
+        # 4. Avoid `python3 | python3` pipelines.
+        self.assertIn("pipeline", doc)
 
         runtime_compat = readme.split("## Runtime compatibility", 1)[1].split(
             "## Design boundary", 1
