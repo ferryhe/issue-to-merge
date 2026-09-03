@@ -79,6 +79,18 @@ def state_path(args: argparse.Namespace) -> Path:
     return Path(args.state_file).resolve()
 
 
+def decisions_log_path(args: argparse.Namespace) -> Path:
+    path = state_path(args)
+    return path.with_name(path.name + ".decisions.log")
+
+
+def append_decision(log_path: Path, point: str, outcome: str, reason: str) -> None:
+    record = {"at": now_utc(), "point": point, "outcome": outcome, "reason": reason}
+    with log_path.open("a", encoding="utf-8", newline="\n") as handle:
+        json.dump(record, handle, ensure_ascii=False, sort_keys=True)
+        handle.write("\n")
+
+
 def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     if path.exists():
@@ -450,6 +462,27 @@ def cmd_status(args: argparse.Namespace) -> dict[str, Any]:
     return load_state(state_path(args))
 
 
+def cmd_record_decision(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    point = require_text(args.point, "point")
+    outcome = require_text(args.outcome, "outcome")
+    reason = require_text(args.reason, "reason")
+    append_decision(decisions_log_path(args), point, outcome, reason)
+    add_event(state, "decision_recorded", point=point, outcome=outcome, reason=reason)
+    save_state(path, state)
+    return state
+
+
+def cmd_show_decisions(args: argparse.Namespace) -> None:
+    log_path = decisions_log_path(args)
+    if not log_path.is_file():
+        print("(no decisions recorded)")
+    else:
+        sys.stdout.write(log_path.read_text(encoding="utf-8"))
+    return None
+
+
 def add_state_file(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state-file", required=True)
 
@@ -564,6 +597,17 @@ def build_parser() -> argparse.ArgumentParser:
     task_closed.add_argument("--evidence", required=True)
     task_closed.set_defaults(handler=cmd_mark_task_closed)
 
+    record_decision = commands.add_parser("record-decision", help="append one decision to the append-only decisions log")
+    add_state_file(record_decision)
+    record_decision.add_argument("--point", required=True)
+    record_decision.add_argument("--outcome", required=True)
+    record_decision.add_argument("--reason", required=True)
+    record_decision.set_defaults(handler=cmd_record_decision)
+
+    show_decisions = commands.add_parser("show-decisions", help="print the append-only decisions log")
+    add_state_file(show_decisions)
+    show_decisions.set_defaults(handler=cmd_show_decisions)
+
     status = commands.add_parser("status", help="print current state")
     add_state_file(status)
     status.set_defaults(handler=cmd_status)
@@ -572,9 +616,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    state = args.handler(args)
-    json.dump(state, sys.stdout, ensure_ascii=False, indent=2, sort_keys=True)
-    sys.stdout.write("\n")
+    result = args.handler(args)
+    if result is not None:
+        json.dump(result, sys.stdout, ensure_ascii=False, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
     return 0
 
 

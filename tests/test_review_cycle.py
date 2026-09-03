@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import tempfile
 import unittest
@@ -159,6 +161,86 @@ class ReviewCycleTests(unittest.TestCase):
             state["task_close"]["evidence"],
             "Issue task closed and resources released",
         )
+
+    def test_record_decision_appends_line_and_history_event(self) -> None:
+        log_path = review_cycle.decisions_log_path(args(self.state_file))
+        review_cycle.cmd_record_decision(
+            args(
+                self.state_file,
+                point="review-1 finding accept",
+                outcome="accept",
+                reason="reproducible data-contract bug mapped to AC-2",
+            )
+        )
+
+        lines = [
+            line
+            for line in log_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        self.assertEqual(record["point"], "review-1 finding accept")
+        self.assertEqual(record["outcome"], "accept")
+        self.assertEqual(record["reason"], "reproducible data-contract bug mapped to AC-2")
+        # `at` is present and a valid ISO timestamp
+        datetime.fromisoformat(record["at"])
+
+        state = self.load()
+        self.assertEqual(state["history"][-1]["kind"], "decision_recorded")
+        self.assertEqual(state["history"][-1]["point"], "review-1 finding accept")
+        self.assertEqual(state["history"][-1]["outcome"], "accept")
+
+    def test_record_decision_is_append_only(self) -> None:
+        log_path = review_cycle.decisions_log_path(args(self.state_file))
+        review_cycle.cmd_record_decision(
+            args(self.state_file, point="finding 1", outcome="reject", reason="speculative")
+        )
+        review_cycle.cmd_record_decision(
+            args(self.state_file, point="round 1", outcome="changes", reason="one valid finding")
+        )
+
+        lines = [
+            line
+            for line in log_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(json.loads(lines[0])["point"], "finding 1")
+        self.assertEqual(json.loads(lines[1])["point"], "round 1")
+        self.assertEqual(json.loads(lines[1])["outcome"], "changes")
+
+    def test_show_decisions_reads_back_content(self) -> None:
+        empty_buf = io.StringIO()
+        with contextlib.redirect_stdout(empty_buf):
+            review_cycle.cmd_show_decisions(args(self.state_file))
+        self.assertIn("no decisions", empty_buf.getvalue())
+
+        review_cycle.cmd_record_decision(
+            args(
+                self.state_file,
+                point="remote comment #3",
+                outcome="invalid",
+                reason="policy-excluded speculative item",
+            )
+        )
+        review_cycle.cmd_record_decision(
+            args(
+                self.state_file,
+                point="blocked resolution",
+                outcome="merge",
+                reason="controller decision with evidence",
+            )
+        )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            review_cycle.cmd_show_decisions(args(self.state_file))
+        output = buf.getvalue()
+        self.assertIn("remote comment #3", output)
+        self.assertIn("invalid", output)
+        self.assertIn("blocked resolution", output)
+        self.assertIn("merge", output)
 
 
 class SkillMetadataTests(unittest.TestCase):
