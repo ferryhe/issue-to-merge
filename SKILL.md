@@ -62,6 +62,7 @@ The standard Issue task contains this root manager, exactly one persistent imple
 - Confirm the assigned worktree is clean and the branch starts at the supplied latest remote default-branch SHA.
 - For a bug Issue, verify the premise before translating acceptance criteria: reproduce the reported behavior on the assigned default-branch baseline and inspect the relevant code history with targeted `git blame`, `git log -L`, or `git log -S` evidence to determine whether the behavior is intentional or the Issue is stale. If the problem is not reproducible or conflicts with current documented intent, stop before implementation and return the evidence to the controller; do not invent a change merely to satisfy stale wording.
 - Translate the Issue into numbered acceptance criteria (`AC-1`, `AC-2`, ...), file ownership, non-goals, and required validation. Record any explicit user-requested review-policy override; otherwise use the default review policy unchanged.
+- Classify the Issue as code-change or verification-only. If it is verification-only, stop before implementation and report the evidence that the existing implementation already satisfies each acceptance criterion to the controller instead of writing code; follow [references/acceptance-already-implemented-pattern.md](references/acceptance-already-implemented-pattern.md).
 - Initialize the state script before dispatching implementation.
 
 ### 2. Dispatch implementation
@@ -133,6 +134,13 @@ A value of `null` or a missing key makes that role fall back to the agent's own 
 
 ## Quality Gates
 
+Every Issue resolves into exactly one of two legal delivery shapes:
+
+- **Code-change delivery** — a PR that delivers code changes satisfying the acceptance criteria.
+- **Verification-only delivery** — a PR that delivers a verification report proving the existing implementation on the default branch already satisfies every acceptance criterion. See [references/acceptance-already-implemented-pattern.md](references/acceptance-already-implemented-pattern.md).
+
+Both shapes must satisfy the gates below. A verification-only delivery is evidence that the existing implementation already meets the acceptance criteria; it is not a shortcut for "it looks implemented, so skip".
+
 Do not treat an Issue as complete until:
 
 - its branch/worktree started from the latest clean remote default branch after the preceding Issue;
@@ -189,3 +197,4 @@ Manager, branch, commit, review-count, check, and raw evidence details remain in
 - Merging while required checks fail, a valid blocker is known, or branch protection would need bypassing.
 - Merging a PR that does not close the Issue, or advancing before GitHub confirms the Issue is closed.
 - Starting the next Issue before merge, branch/worktree cleanup, and closure of the current Issue task are verified.
+- Assuming every Issue has a code change. Some acceptance criteria may already be satisfied on the default branch, making the gap verification rather than implementation. Audit the latest remote default branch before creating the worktree and classify the Issue as verification-only when appropriate.
