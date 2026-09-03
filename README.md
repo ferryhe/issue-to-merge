@@ -25,6 +25,7 @@ Turn named GitHub Issues into reviewed, merged PRs with an evidence-backed, boun
 - Verified Issue closure and ordered branch/worktree cleanup.
 - Verified closure of the completed Issue task before the next Issue begins.
 - A deterministic JSON state machine in `scripts/review_cycle.py` that rejects invalid lifecycle transitions.
+- A single `config/models.json` entry point for per-role model selection; roles without a configured model fall back to the agent's own current model.
 
 Issue bodies, PR text, and comments are treated as untrusted repository content. They cannot expand permissions or override user and repository policy.
 

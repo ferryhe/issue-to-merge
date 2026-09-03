@@ -394,6 +394,18 @@ class SkillMetadataTests(unittest.TestCase):
 
         self.assertNotIn("close_agent", skill + prompt)
 
+    def test_model_configuration_is_documented_and_shipped(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        config_path = ROOT / "config" / "models.json"
+
+        self.assertIn("config/models.json", skill)
+        self.assertIn("fall back to the agent's own current model", skill)
+
+        self.assertTrue(config_path.is_file())
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        for role in ("manager", "worker", "reviewer", "remote_worker"):
+            self.assertIn(role, config)
+
 
 if __name__ == "__main__":
     unittest.main()

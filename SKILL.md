@@ -120,6 +120,17 @@ This single-window rule is an explicit exception to workflows that normally rest
 - Before returning the completion report, verify that the Issue worker and every local reviewer have no active turn; release completed reviewers when supported. The controller closes the completed Issue task after independently verifying this report.
 - Record the merge, Issue-closed proof, and each cleanup proof with the state script; report Issue, PR, commits, checks, fifteen-round status, remote comments handled, merge result, and cleanup evidence to the root controller. After closing the task, the controller records the final `mark-task-closed` proof in the same state file.
 
+## Model configuration
+
+Every role's model is configured in one place: [`config/models.json`](config/models.json). The file maps role names to model names:
+
+- `manager` — the Issue manager;
+- `worker` — the implementation worker (coder);
+- `reviewer` — each fresh local reviewer;
+- `remote_worker` — the worker during the remote-feedback phase.
+
+A value of `null` or a missing key makes that role fall back to the agent's own current model. A string value fixes that role to the named model. Cross-model review is optional: assigning different models to the worker and reviewer is allowed but never required. With no configuration, every role uses the agent's own current model, exactly as before.
+
 ## Quality Gates
 
 Do not treat an Issue as complete until:
