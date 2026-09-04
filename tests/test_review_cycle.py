@@ -1128,6 +1128,19 @@ class SkillMetadataTests(unittest.TestCase):
 
         self.assertNotIn("close_agent", skill + prompt)
 
+    def test_skill_workflow_includes_required_identity_flags(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        local_review = skill.split("### 3. Run the bounded local-review loop", 1)[
+            1
+        ].split("### 4. Publish", 1)[0]
+
+        self.assertIn("`start-review --reviewer-id", local_review)
+        self.assertIn("--reviewer-profile", local_review)
+        self.assertIn("`record-fix --worker-id", local_review)
+        self.assertIn("--worker-profile", local_review)
+        self.assertIn("--worker-provider", local_review)
+        self.assertIn("--worker-model", local_review)
+
     def test_model_configuration_is_documented_and_shipped(self) -> None:
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         config_path = ROOT / "config" / "models.json"
