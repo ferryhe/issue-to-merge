@@ -41,18 +41,68 @@ class ReviewCycleTests(unittest.TestCase):
     def load(self) -> dict:
         return json.loads(self.state_file.read_text(encoding="utf-8"))
 
+    def record_worker_and_start_implementation(
+        self,
+        *,
+        worker_id: str = "worker-1",
+        worker_profile: str = "hermes-worker",
+        worker_provider: str = "anthropic",
+        worker_model: str = "claude-sonnet",
+    ) -> None:
+        review_cycle.cmd_record_worker(
+            args(
+                self.state_file,
+                worker_id=worker_id,
+                worker_profile=worker_profile,
+                worker_provider=worker_provider,
+                worker_model=worker_model,
+                continuity="worker_identity_profile",
+            )
+        )
+        review_cycle.cmd_start_implementation(
+            args(
+                self.state_file,
+                worker_id=worker_id,
+                worker_profile=worker_profile,
+                worker_provider=worker_provider,
+                worker_model=worker_model,
+            )
+        )
+
+    def test_init_starts_in_worker_selection_stage(self) -> None:
+        state = self.load()
+        self.assertEqual(state["stage"], "worker_selection")
+        self.assertIsNone(state["implementation_started_at"])
+        self.assertFalse(state["legacy_in_progress"])
+
     def test_aborted_review_does_not_consume_a_round(self) -> None:
-        review_cycle.cmd_start_review(args(self.state_file))
+        self.record_worker_and_start_implementation()
+        review_cycle.cmd_start_review(
+            args(
+                self.state_file,
+                reviewer_id="reviewer-1",
+                reviewer_profile="hermes-reviewer",
+            )
+        )
         review_cycle.cmd_abort_review(args(self.state_file, reason="reviewer unavailable"))
 
         state = self.load()
         self.assertEqual(state["review_count"], 0)
         self.assertFalse(state["active_review"])
         self.assertEqual(state["history"][-1]["kind"], "review_aborted")
+        self.assertEqual(state["history"][-1]["reviewer_id"], "reviewer-1")
+        self.assertEqual(state["history"][-1]["reviewer_profile"], "hermes-reviewer")
 
     def test_fifteenth_round_fix_closes_local_review_without_round_sixteen(self) -> None:
+        self.record_worker_and_start_implementation()
         for round_number in range(1, review_cycle.MAX_REVIEWS + 1):
-            review_cycle.cmd_start_review(args(self.state_file))
+            review_cycle.cmd_start_review(
+                args(
+                    self.state_file,
+                    reviewer_id=f"reviewer-{round_number}",
+                    reviewer_profile="hermes-reviewer",
+                )
+            )
             review_cycle.cmd_finish_review(
                 args(
                     self.state_file,
@@ -64,6 +114,10 @@ class ReviewCycleTests(unittest.TestCase):
             review_cycle.cmd_record_fix(
                 args(
                     self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="hermes-worker",
+                    worker_provider="anthropic",
+                    worker_model="claude-sonnet",
                     report=f"fix-{round_number}.md",
                     validation="tests passed",
                 )
@@ -74,11 +128,27 @@ class ReviewCycleTests(unittest.TestCase):
         self.assertTrue(state["local_review_closed"])
         self.assertTrue(state["final_unreviewed_fix"])
         with self.assertRaisesRegex(SystemExit, "local review is already closed"):
-            review_cycle.cmd_start_review(args(self.state_file))
+            review_cycle.cmd_start_review(
+                args(
+                    self.state_file,
+                    reviewer_id="reviewer-16",
+                    reviewer_profile="hermes-reviewer",
+                )
+            )
 
     def test_full_clean_lifecycle_and_single_feedback_window(self) -> None:
         fixed = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        review_cycle.cmd_start_review(args(self.state_file))
+        self.record_worker_and_start_implementation(
+            worker_provider="openai",
+            worker_model="gpt-5-codex",
+        )
+        review_cycle.cmd_start_review(
+            args(
+                self.state_file,
+                reviewer_id="reviewer-1",
+                reviewer_profile="hermes-reviewer",
+            )
+        )
         review_cycle.cmd_finish_review(
             args(
                 self.state_file,
@@ -114,7 +184,15 @@ class ReviewCycleTests(unittest.TestCase):
             )
 
         review_cycle.cmd_record_remote_assessment(
-            args(self.state_file, outcome="clean", report="remote-review.md")
+            args(
+                self.state_file,
+                outcome="clean",
+                report="remote-review.md",
+                worker_id="worker-1",
+                worker_profile="hermes-worker",
+                worker_provider="openai",
+                worker_model="gpt-5-codex",
+            )
         )
         review_cycle.cmd_record_checks(
             args(
@@ -161,6 +239,658 @@ class ReviewCycleTests(unittest.TestCase):
             state["task_close"]["evidence"],
             "Issue task closed and resources released",
         )
+
+    def test_schema_v3_state_without_new_fields_is_still_readable(self) -> None:
+        state = self.load()
+        for key in (
+            "worker",
+            "worker_continuity",
+            "active_reviewer",
+            "used_reviewer_ids",
+            "check_repair_count",
+            "check_repairs",
+            "implementation_started_at",
+            "legacy_in_progress",
+        ):
+            state.pop(key, None)
+        state["stage"] = "implementing"
+        self.state_file.write_text(json.dumps(state), encoding="utf-8")
+
+        loaded = review_cycle.cmd_status(args(self.state_file))
+
+        self.assertIsNone(loaded["worker"])
+        self.assertEqual(loaded["worker_continuity"], "worker_identity_profile")
+        self.assertIsNone(loaded["active_reviewer"])
+        self.assertEqual(loaded["used_reviewer_ids"], [])
+        self.assertEqual(loaded["check_repair_count"], 0)
+        self.assertEqual(loaded["check_repairs"], [])
+        self.assertIsNone(loaded["implementation_started_at"])
+        self.assertFalse(loaded["legacy_in_progress"])
+
+    def test_late_first_worker_record_is_rejected_after_worker_selection_stage(self) -> None:
+        state = self.load()
+        state["stage"] = "implementing"
+        self.state_file.write_text(json.dumps(state), encoding="utf-8")
+
+        with self.assertRaisesRegex(SystemExit, "first-time worker recording is allowed only in worker_selection"):
+            review_cycle.cmd_record_worker(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="issue-worker",
+                    worker_provider="openai",
+                    worker_model="gpt-5",
+                    continuity="worker_identity_profile",
+                )
+            )
+
+    def test_start_implementation_requires_recorded_worker_and_exact_route(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "record the implementation worker before starting implementation"):
+            review_cycle.cmd_start_implementation(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="issue-worker",
+                    worker_provider="openai",
+                    worker_model="gpt-5",
+                )
+            )
+
+        review_cycle.cmd_record_worker(
+            args(
+                self.state_file,
+                worker_id="worker-1",
+                worker_profile="issue-worker",
+                worker_provider="openai",
+                worker_model="gpt-5",
+                continuity="worker_identity_profile",
+            )
+        )
+        with self.assertRaisesRegex(SystemExit, "worker provider/model does not match"):
+            review_cycle.cmd_start_implementation(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="issue-worker",
+                    worker_provider="anthropic",
+                    worker_model="gpt-5",
+                )
+            )
+        review_cycle.cmd_start_implementation(
+            args(
+                self.state_file,
+                worker_id="worker-1",
+                worker_profile="issue-worker",
+                worker_provider="openai",
+                worker_model="gpt-5",
+            )
+        )
+
+    def test_start_implementation_records_auditable_timestamp_and_order(self) -> None:
+        selected_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        started_at = datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc)
+        with patch.object(review_cycle, "current_time", return_value=selected_at):
+            review_cycle.cmd_record_worker(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="issue-worker",
+                    worker_provider="openai",
+                    worker_model="gpt-5",
+                    continuity="worker_identity_profile",
+                )
+            )
+        with patch.object(review_cycle, "current_time", return_value=started_at):
+            review_cycle.cmd_start_implementation(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="issue-worker",
+                    worker_provider="openai",
+                    worker_model="gpt-5",
+                )
+            )
+
+        state = self.load()
+        self.assertEqual(state["stage"], "implementing")
+        self.assertEqual(state["implementation_started_at"], started_at.isoformat())
+        self.assertEqual(state["history"][0]["kind"], "initialized")
+        self.assertEqual(state["history"][1]["kind"], "worker_recorded")
+        self.assertEqual(state["history"][2]["kind"], "implementation_started")
+        self.assertEqual(state["history"][2]["worker_id"], "worker-1")
+        self.assertEqual(state["history"][2]["worker_profile"], "issue-worker")
+        self.assertEqual(state["history"][2]["worker_provider"], "openai")
+        self.assertEqual(state["history"][2]["worker_model"], "gpt-5")
+
+    def test_start_review_requires_recorded_worker(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "record the implementation worker before starting review"):
+            review_cycle.cmd_start_review(
+                args(
+                    self.state_file,
+                    reviewer_id="reviewer-1",
+                    reviewer_profile="hermes-reviewer",
+                )
+            )
+
+    def test_start_review_requires_start_implementation(self) -> None:
+        review_cycle.cmd_record_worker(
+            args(
+                self.state_file,
+                worker_id="worker-1",
+                worker_profile="issue-worker",
+                worker_provider="openai",
+                worker_model="gpt-5",
+                continuity="worker_identity_profile",
+            )
+        )
+        with self.assertRaisesRegex(SystemExit, "start implementation before starting review"):
+            review_cycle.cmd_start_review(
+                args(
+                    self.state_file,
+                    reviewer_id="reviewer-1",
+                    reviewer_profile="hermes-reviewer",
+                )
+            )
+
+    def test_worker_continuity_requires_same_recorded_identity_and_profile(self) -> None:
+        self.record_worker_and_start_implementation(
+            worker_profile="openai-implementer",
+            worker_provider="openai",
+            worker_model="gpt-5",
+        )
+
+        review_cycle.cmd_start_review(
+            args(
+                self.state_file,
+                reviewer_id="reviewer-1",
+                reviewer_profile="hermes-reviewer",
+            )
+        )
+        review_cycle.cmd_finish_review(
+            args(
+                self.state_file,
+                outcome="changes",
+                report="review-1.md",
+                summary="one valid finding",
+            )
+        )
+        with self.assertRaisesRegex(SystemExit, "worker identity/profile does not match"):
+            review_cycle.cmd_record_fix(
+                args(
+                    self.state_file,
+                    report="fix-1.md",
+                    validation="tests passed",
+                    worker_id="worker-2",
+                    worker_profile="openai-implementer",
+                    worker_provider="openai",
+                    worker_model="gpt-5",
+                )
+            )
+        review_cycle.cmd_record_fix(
+            args(
+                self.state_file,
+                report="fix-1.md",
+                validation="tests passed",
+                worker_id="worker-1",
+                worker_profile="openai-implementer",
+                worker_provider="openai",
+                worker_model="gpt-5",
+            )
+        )
+
+        review_cycle.cmd_start_review(
+            args(
+                self.state_file,
+                reviewer_id="reviewer-2",
+                reviewer_profile="hermes-reviewer",
+            )
+        )
+        review_cycle.cmd_finish_review(
+            args(
+                self.state_file,
+                outcome="pass",
+                report="review-2.md",
+                summary="no findings",
+            )
+        )
+        review_cycle.cmd_record_pr(
+            args(
+                self.state_file,
+                url="https://github.com/example/repo/pull/7",
+                head_sha="abc123",
+                closing_reference="Closes #42",
+            )
+        )
+        ready_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        with patch.object(review_cycle, "current_time", return_value=ready_at):
+            review_cycle.cmd_mark_ready(args(self.state_file))
+        with patch.object(
+            review_cycle,
+            "current_time",
+            return_value=ready_at + timedelta(seconds=review_cycle.REMOTE_WAIT_SECONDS),
+        ):
+            review_cycle.cmd_mark_feedback_fetched(
+                args(self.state_file, snapshot="feedback.json")
+            )
+        with self.assertRaisesRegex(SystemExit, "worker identity/profile does not match"):
+            review_cycle.cmd_record_remote_assessment(
+                args(
+                    self.state_file,
+                    outcome="changes",
+                    report="remote-review.md",
+                    worker_id="worker-1",
+                    worker_profile="anthropic-implementer",
+                    worker_provider="openai",
+                    worker_model="gpt-5",
+                )
+            )
+        review_cycle.cmd_record_remote_assessment(
+            args(
+                self.state_file,
+                outcome="changes",
+                report="remote-review.md",
+                worker_id="worker-1",
+                worker_profile="openai-implementer",
+                worker_provider="openai",
+                worker_model="gpt-5",
+            )
+        )
+        with self.assertRaisesRegex(SystemExit, "worker identity/profile does not match"):
+            review_cycle.cmd_record_remote_fix(
+                args(
+                    self.state_file,
+                    head_sha="def456",
+                    validation="tests passed",
+                    worker_id="worker-9",
+                    worker_profile="openai-implementer",
+                    worker_provider="openai",
+                    worker_model="gpt-5",
+                )
+            )
+        review_cycle.cmd_record_remote_fix(
+            args(
+                self.state_file,
+                head_sha="def456",
+                validation="tests passed",
+                worker_id="worker-1",
+                worker_profile="openai-implementer",
+                worker_provider="openai",
+                worker_model="gpt-5",
+            )
+        )
+
+    def test_exact_session_worker_continuity_is_rejected(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "exact-session continuity is unsupported"):
+            review_cycle.cmd_record_worker(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="hermes-worker",
+                    worker_provider="anthropic",
+                    worker_model="claude-sonnet",
+                    continuity="exact_session",
+                )
+            )
+
+    def test_reviewer_identity_is_recorded_and_cannot_be_reused(self) -> None:
+        self.record_worker_and_start_implementation(
+            worker_profile="anthropic-worker",
+            worker_provider="anthropic",
+            worker_model="claude-sonnet",
+        )
+        review_cycle.cmd_start_review(
+            args(
+                self.state_file,
+                reviewer_id="reviewer-1",
+                reviewer_profile="profile-a",
+            )
+        )
+        state = self.load()
+        self.assertEqual(state["history"][-1]["kind"], "review_started")
+        self.assertEqual(state["history"][-1]["reviewer_id"], "reviewer-1")
+        self.assertEqual(state["history"][-1]["reviewer_profile"], "profile-a")
+
+        review_cycle.cmd_abort_review(args(self.state_file, reason="spawn failed"))
+        state = self.load()
+        self.assertEqual(state["history"][-1]["kind"], "review_aborted")
+        self.assertEqual(state["history"][-1]["reviewer_id"], "reviewer-1")
+        self.assertEqual(state["history"][-1]["reviewer_profile"], "profile-a")
+
+        with self.assertRaisesRegex(SystemExit, "reviewer identity was already used"):
+            review_cycle.cmd_start_review(
+                args(
+                    self.state_file,
+                    reviewer_id="reviewer-1",
+                    reviewer_profile="profile-a",
+                )
+            )
+
+        review_cycle.cmd_start_review(
+            args(
+                self.state_file,
+                reviewer_id="reviewer-2",
+                reviewer_profile="profile-a",
+            )
+        )
+        review_cycle.cmd_finish_review(
+            args(
+                self.state_file,
+                outcome="pass",
+                report="review-1.md",
+                summary="no findings",
+            )
+        )
+        state = self.load()
+        self.assertEqual(state["history"][-1]["kind"], "review_finished")
+        self.assertEqual(state["history"][-1]["reviewer_id"], "reviewer-2")
+        self.assertEqual(state["history"][-1]["reviewer_profile"], "profile-a")
+
+    def test_record_worker_locks_provider_and_model_on_worker_driven_transitions(self) -> None:
+        self.record_worker_and_start_implementation(
+            worker_profile="anthropic-worker",
+            worker_provider="anthropic",
+            worker_model="claude-sonnet",
+        )
+        review_cycle.cmd_start_review(
+            args(
+                self.state_file,
+                reviewer_id="reviewer-1",
+                reviewer_profile="openai-reviewer",
+            )
+        )
+        review_cycle.cmd_finish_review(
+            args(
+                self.state_file,
+                outcome="changes",
+                report="review-1.md",
+                summary="one valid finding",
+            )
+        )
+        with self.assertRaisesRegex(SystemExit, "worker provider/model does not match"):
+            review_cycle.cmd_record_fix(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="anthropic-worker",
+                    worker_provider="openai",
+                    worker_model="claude-sonnet",
+                    report="fix-1.md",
+                    validation="tests passed",
+                )
+            )
+        with self.assertRaisesRegex(SystemExit, "worker provider/model does not match"):
+            review_cycle.cmd_record_fix(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="anthropic-worker",
+                    worker_provider="anthropic",
+                    worker_model="claude-opus",
+                    report="fix-1.md",
+                    validation="tests passed",
+                )
+            )
+        review_cycle.cmd_record_fix(
+            args(
+                self.state_file,
+                worker_id="worker-1",
+                worker_profile="anthropic-worker",
+                worker_provider="anthropic",
+                worker_model="claude-sonnet",
+                report="fix-1.md",
+                validation="tests passed",
+            )
+        )
+
+    def test_legacy_worker_can_be_enriched_once_then_locks_provider_and_model(self) -> None:
+        state = self.load()
+        state["worker"] = {
+            "id": "worker-1",
+            "profile": "issue-worker",
+            "recorded_at": "2026-09-04T00:00:00+00:00",
+        }
+        state["needs_fix"] = True
+        state["stage"] = "fixing"
+        state["review_count"] = 1
+        state["legacy_in_progress"] = True
+        self.state_file.write_text(json.dumps(state), encoding="utf-8")
+
+        with self.assertRaisesRegex(SystemExit, "enrich the recorded worker with provider and model first"):
+            review_cycle.cmd_record_fix(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="issue-worker",
+                    worker_provider="openai",
+                    worker_model="gpt-5",
+                    report="fix-1.md",
+                    validation="tests passed",
+                )
+            )
+
+        review_cycle.cmd_record_worker(
+            args(
+                self.state_file,
+                worker_id="worker-1",
+                worker_profile="issue-worker",
+                worker_provider="openai",
+                worker_model="gpt-5",
+                continuity="worker_identity_profile",
+            )
+        )
+        enriched = review_cycle.cmd_status(args(self.state_file))
+        self.assertEqual(enriched["worker"]["provider"], "openai")
+        self.assertEqual(enriched["worker"]["model"], "gpt-5")
+        review_cycle.cmd_record_fix(
+            args(
+                self.state_file,
+                worker_id="worker-1",
+                worker_profile="issue-worker",
+                worker_provider="openai",
+                worker_model="gpt-5",
+                report="fix-1.md",
+                validation="tests passed",
+            )
+        )
+
+        with self.assertRaisesRegex(SystemExit, "implementation worker is already recorded"):
+            review_cycle.cmd_record_worker(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="issue-worker",
+                    worker_provider="anthropic",
+                    worker_model="claude-sonnet",
+                    continuity="worker_identity_profile",
+                )
+            )
+
+    def test_legacy_in_progress_state_is_detected_and_pending_fix_can_continue(self) -> None:
+        state = self.load()
+        state["worker"] = {
+            "id": "worker-1",
+            "profile": "issue-worker",
+            "recorded_at": "2026-09-04T00:00:00+00:00",
+        }
+        state["review_count"] = 2
+        state["needs_fix"] = True
+        state["stage"] = "fixing"
+        for key in ("implementation_started_at", "legacy_in_progress"):
+            state.pop(key, None)
+        self.state_file.write_text(json.dumps(state), encoding="utf-8")
+
+        loaded = review_cycle.cmd_status(args(self.state_file))
+        self.assertIsNone(loaded["implementation_started_at"])
+        self.assertTrue(loaded["legacy_in_progress"])
+
+        review_cycle.cmd_record_worker(
+            args(
+                self.state_file,
+                worker_id="worker-1",
+                worker_profile="issue-worker",
+                worker_provider="openai",
+                worker_model="gpt-5",
+                continuity="worker_identity_profile",
+            )
+        )
+        review_cycle.cmd_record_fix(
+            args(
+                self.state_file,
+                worker_id="worker-1",
+                worker_profile="issue-worker",
+                worker_provider="openai",
+                worker_model="gpt-5",
+                report="fix-2.md",
+                validation="tests passed",
+            )
+        )
+        continued = review_cycle.cmd_status(args(self.state_file))
+        self.assertTrue(continued["legacy_in_progress"])
+        self.assertFalse(continued["needs_fix"])
+
+    def test_record_check_repair_supports_issue_caused_failed_checks_before_remote_assessment(self) -> None:
+        self.record_worker_and_start_implementation(
+            worker_profile="issue-worker",
+            worker_provider="openai",
+            worker_model="gpt-5",
+        )
+        review_cycle.cmd_start_review(
+            args(
+                self.state_file,
+                reviewer_id="reviewer-1",
+                reviewer_profile="reviewer-profile",
+            )
+        )
+        review_cycle.cmd_finish_review(
+            args(
+                self.state_file,
+                outcome="pass",
+                report="review-1.md",
+                summary="no findings",
+            )
+        )
+        review_cycle.cmd_record_pr(
+            args(
+                self.state_file,
+                url="https://github.com/example/repo/pull/7",
+                head_sha="abc123",
+                closing_reference="Closes #42",
+            )
+        )
+        ready_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        with patch.object(review_cycle, "current_time", return_value=ready_at):
+            review_cycle.cmd_mark_ready(args(self.state_file))
+        review_cycle.cmd_record_checks(
+            args(
+                self.state_file,
+                head_sha="abc123",
+                result="fail",
+                evidence="Issue-caused CI failure",
+            )
+        )
+
+        with self.assertRaisesRegex(SystemExit, "worker provider/model does not match"):
+            review_cycle.cmd_record_check_repair(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="issue-worker",
+                    worker_provider="anthropic",
+                    worker_model="gpt-5",
+                    head_sha="def456",
+                    validation="targeted tests passed",
+                    evidence="fixed CI failure",
+                )
+            )
+        review_cycle.cmd_record_check_repair(
+            args(
+                self.state_file,
+                worker_id="worker-1",
+                worker_profile="issue-worker",
+                worker_provider="openai",
+                worker_model="gpt-5",
+                head_sha="def456",
+                validation="targeted tests passed",
+                evidence="fixed CI failure",
+            )
+        )
+
+        state = self.load()
+        self.assertEqual(state["pr_head_sha"], "def456")
+        self.assertFalse(state["checks_passed"])
+        self.assertIsNone(state["checks_evidence"])
+        self.assertEqual(state["remote_feedback_started_at"], ready_at.isoformat())
+        self.assertIsNone(state["remote_feedback_fetched_at"])
+        self.assertEqual(state["stage"], "pr_ready")
+        self.assertEqual(state["check_repair_count"], 1)
+        self.assertEqual(state["check_repairs"][0]["previous_head_sha"], "abc123")
+        self.assertEqual(state["check_repairs"][0]["head_sha"], "def456")
+
+    def test_record_check_repair_requires_failed_current_head_and_new_head(self) -> None:
+        self.record_worker_and_start_implementation(
+            worker_profile="issue-worker",
+            worker_provider="openai",
+            worker_model="gpt-5",
+        )
+        review_cycle.cmd_start_review(
+            args(
+                self.state_file,
+                reviewer_id="reviewer-1",
+                reviewer_profile="reviewer-profile",
+            )
+        )
+        review_cycle.cmd_finish_review(
+            args(
+                self.state_file,
+                outcome="pass",
+                report="review-1.md",
+                summary="no findings",
+            )
+        )
+        review_cycle.cmd_record_pr(
+            args(
+                self.state_file,
+                url="https://github.com/example/repo/pull/7",
+                head_sha="abc123",
+                closing_reference="Closes #42",
+            )
+        )
+
+        with self.assertRaisesRegex(SystemExit, "failed checks on the current PR HEAD"):
+            review_cycle.cmd_record_check_repair(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="issue-worker",
+                    worker_provider="openai",
+                    worker_model="gpt-5",
+                    head_sha="def456",
+                    validation="targeted tests passed",
+                    evidence="fixed CI failure",
+                )
+            )
+
+        review_cycle.cmd_record_checks(
+            args(
+                self.state_file,
+                head_sha="abc123",
+                result="fail",
+                evidence="Issue-caused CI failure",
+            )
+        )
+        with self.assertRaisesRegex(SystemExit, "must record a new PR HEAD SHA"):
+            review_cycle.cmd_record_check_repair(
+                args(
+                    self.state_file,
+                    worker_id="worker-1",
+                    worker_profile="issue-worker",
+                    worker_provider="openai",
+                    worker_model="gpt-5",
+                    head_sha="abc123",
+                    validation="targeted tests passed",
+                    evidence="fixed CI failure",
+                )
+            )
 
     def test_record_decision_appends_line_and_history_event(self) -> None:
         log_path = review_cycle.decisions_log_path(args(self.state_file))
@@ -337,10 +1067,14 @@ class SkillMetadataTests(unittest.TestCase):
         self.assertIn("Feature-only work is exempt", manager_template)
         self.assertIn("attribute it before repair", manager_template)
         self.assertIn("Re-run once without a code change", manager_template)
+        self.assertIn("record-check-repair", manager_template)
+        self.assertIn("start-implementation", manager_template)
 
         self.assertIn("same-shaped sibling sites to inspect", worker_fields)
         self.assertIn("expected pre-fix failure and post-fix pass evidence", worker_fields)
         self.assertIn("feature-only work is exempt", worker_fields)
+        self.assertIn("provider", worker_fields)
+        self.assertIn("model", worker_fields)
         self.assertNotIn("attribute it before repair", worker_fields)
 
     def test_each_issue_uses_one_closable_task_and_fresh_reviewers(self) -> None:
@@ -394,6 +1128,19 @@ class SkillMetadataTests(unittest.TestCase):
 
         self.assertNotIn("close_agent", skill + prompt)
 
+    def test_skill_workflow_includes_required_identity_flags(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        local_review = skill.split("### 3. Run the bounded local-review loop", 1)[
+            1
+        ].split("### 4. Publish", 1)[0]
+
+        self.assertIn("`start-review --reviewer-id", local_review)
+        self.assertIn("--reviewer-profile", local_review)
+        self.assertIn("`record-fix --worker-id", local_review)
+        self.assertIn("--worker-profile", local_review)
+        self.assertIn("--worker-provider", local_review)
+        self.assertIn("--worker-model", local_review)
+
     def test_model_configuration_is_documented_and_shipped(self) -> None:
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         config_path = ROOT / "config" / "models.json"
@@ -421,19 +1168,25 @@ class SkillMetadataTests(unittest.TestCase):
 
     def test_hermes_runtime_adaptation_is_documented_and_linked(self) -> None:
         doc_path = ROOT / "references" / "hermes-runtime.md"
+        adapter_path = ROOT / "references" / "hermes-profiles-kanban.md"
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
 
         self.assertTrue(doc_path.is_file())
+        self.assertTrue(adapter_path.is_file())
         doc = doc_path.read_text(encoding="utf-8")
+        adapter = adapter_path.read_text(encoding="utf-8")
         self.assertGreater(len(doc.strip()), 0)
+        self.assertGreater(len(adapter.strip()), 0)
 
         # Issue #12 requires the document to actually cover the four Hermes runtime
         # adaptations, not merely exist as an empty shell. Assert each section's
         # key phrase is present so future edits cannot silently drop a section.
-        # 1. Flatten the role hierarchy (delegate_task does not support nesting).
+        # 1. Default flat hierarchy; higher max_spawn_depth can permit nesting.
         self.assertIn("Flatten the role hierarchy", doc)
-        self.assertIn("does not support nesting", doc)
+        self.assertIn("max_spawn_depth: 1", doc)
+        self.assertIn("higher configured depth can permit orchestrator nesting", doc)
+        self.assertIn("worker and reviewers must not delegate further", doc)
         # 2. Respect the ~600s delegate timeout.
         self.assertIn("600", doc)
         self.assertIn("timeout", doc)
@@ -442,16 +1195,36 @@ class SkillMetadataTests(unittest.TestCase):
         self.assertIn("worktree", doc)
         # 4. Avoid `python3 | python3` pipelines.
         self.assertIn("pipeline", doc)
+        self.assertIn("hermes-profiles-kanban.md", doc)
+        self.assertIn("worker_identity_profile", adapter)
+        self.assertIn("exact session continuity", adapter.casefold())
+        self.assertIn("same durable card/task handle", adapter)
+        self.assertIn("complete durable task context", adapter)
+        self.assertIn("kanban_show", adapter)
+        self.assertIn("record-worker", adapter)
+        self.assertIn("start-implementation", adapter)
+        self.assertIn("audits declared lifecycle order", adapter)
+        self.assertIn("cannot observe arbitrary out-of-band file edits", adapter)
+        self.assertIn("current diff/test evidence", adapter)
+        self.assertIn("fail closed", adapter)
+        self.assertIn("profiles own config/provider/model", adapter)
+        self.assertIn("config/models.json", adapter)
+        self.assertIn("selected profile is authoritative", adapter)
+        self.assertIn("null role-model config leaves it unchanged", adapter)
+        self.assertIn("max_spawn_depth", adapter)
+        self.assertIn("worker/reviewer remain leaves", adapter)
 
         runtime_compat = readme.split("## Runtime compatibility", 1)[1].split(
             "## Design boundary", 1
         )[0]
         self.assertIn("hermes-runtime.md", runtime_compat)
+        self.assertIn("hermes-profiles-kanban.md", runtime_compat)
 
         runtime_compat_zh = readme_zh.split("## 运行时兼容性", 1)[1].split(
             "## 设计边界", 1
         )[0]
         self.assertIn("hermes-runtime.md", runtime_compat_zh)
+        self.assertIn("hermes-profiles-kanban.md", runtime_compat_zh)
 
 
 if __name__ == "__main__":

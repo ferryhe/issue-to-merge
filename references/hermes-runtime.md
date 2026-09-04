@@ -7,9 +7,11 @@ to rediscover them.
 
 ## 1. Flatten the role hierarchy
 
-Hermes' `delegate_task` does not support nesting: subagents are leaf agents and
-cannot delegate further. The skill's three-layer structure (controller → manager →
-worker/reviewer) therefore cannot map one-to-one.
+Hermes defaults `max_spawn_depth: 1`, which is a flat topology. Current Hermes
+docs also say higher configured depth can permit orchestrator nesting. This
+skill does not use that flexibility. The skill's three-layer structure
+(controller → manager → worker/reviewer) therefore still cannot map one-to-one
+onto Hermes as authorization to add more roles.
 
 Adaptation:
 
@@ -19,13 +21,18 @@ Adaptation:
   worker and each fresh reviewer as leaf agents.
 - The worker and reviewers must not delegate further. Any sub-work they would
   otherwise hand off is done inline by the leaf agent itself.
+- A larger configured spawn depth is not permission to add scout, audit,
+  remote-only, or escalation roles. The skill topology stays root manager + one
+  leaf worker + fresh leaf reviewers only.
 
 ## 2. Respect the delegate timeout
 
-`delegate_task` times out after roughly 600 seconds. A worker or reviewer that
-exceeds this budget fails, and the controller has to take over and recover the
-work. Every task delegated to a worker or reviewer must therefore be
-self-contained and bounded:
+Hermes currently documents `delegation.child_timeout_seconds` with a default of
+`0`, which means no wall-clock cap. A positive value imposes a hard cap on the
+child run. Older or local installs may still behave differently, including
+legacy deployments that effectively timed out around 600 seconds. Every task
+delegated to a worker or reviewer must therefore still be self-contained and
+bounded:
 
 - Give the exact file paths to read and change.
 - Give the exact change scope — what to modify and, just as important, what not
@@ -34,6 +41,9 @@ self-contained and bounded:
   without wandering.
 
 A vague or open-ended task is the main cause of subagent timeouts on Hermes.
+
+For the Hermes Profiles/Kanban adapter used by this skill, see
+[references/hermes-profiles-kanban.md](references/hermes-profiles-kanban.md).
 
 ## 3. Use the worktree's state script when bootstrapping a new command
 

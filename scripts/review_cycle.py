@@ -16,6 +16,7 @@ from typing import Any, NoReturn
 MAX_REVIEWS = 15
 REMOTE_WAIT_SECONDS = 600
 SCHEMA_VERSION = 3
+SUPPORTED_WORKER_CONTINUITY = "worker_identity_profile"
 
 
 def current_time() -> datetime:
@@ -36,6 +37,50 @@ def require_text(value: str | None, name: str) -> str:
     return value.strip()
 
 
+def normalize_state(state: dict[str, Any]) -> dict[str, Any]:
+    had_implementation_started_at = "implementation_started_at" in state
+    had_legacy_in_progress = "legacy_in_progress" in state
+    worker = state.get("worker")
+    if isinstance(worker, dict):
+        worker.setdefault("provider", None)
+        worker.setdefault("model", None)
+    state.setdefault("worker", None)
+    state.setdefault("worker_continuity", SUPPORTED_WORKER_CONTINUITY)
+    state.setdefault("active_reviewer", None)
+    state.setdefault("used_reviewer_ids", [])
+    state.setdefault("check_repair_count", 0)
+    state.setdefault("check_repairs", [])
+    state.setdefault("implementation_started_at", None)
+    state.setdefault("legacy_in_progress", False)
+    if not had_implementation_started_at or not had_legacy_in_progress:
+        if is_legacy_in_progress_state(state):
+            state["legacy_in_progress"] = True
+    return state
+
+
+def is_legacy_in_progress_state(state: dict[str, Any]) -> bool:
+    return bool(
+        state.get("worker")
+        and (
+            state.get("review_count", 0) > 0
+            or state.get("active_review")
+            or state.get("needs_fix")
+            or state.get("local_review_closed")
+            or state.get("pr_url") is not None
+            or state.get("remote_feedback_started_at") is not None
+            or state.get("remote_feedback_fetched_at") is not None
+            or state.get("remote_assessment") is not None
+            or state.get("blocked_resolution") is not None
+            or state.get("remote_fix_count", 0) > 0
+            or state.get("checks_evidence") is not None
+            or state.get("merged_at") is not None
+            or state.get("issue_closed_verified_at") is not None
+            or any(value is not None for value in state.get("cleanup", {}).values())
+            or state.get("task_close") is not None
+        )
+    )
+
+
 def load_state(path: Path) -> dict[str, Any]:
     if not path.is_file():
         fail(f"state file does not exist: {path}")
@@ -48,6 +93,11 @@ def load_state(path: Path) -> dict[str, Any]:
     max_reviews = state.get("max_reviews")
     if not isinstance(max_reviews, int) or max_reviews < 1 or max_reviews > MAX_REVIEWS:
         fail(f"state max_reviews must be an integer from 1 to {MAX_REVIEWS}")
+    state = normalize_state(state)
+    if state["worker_continuity"] != SUPPORTED_WORKER_CONTINUITY:
+        fail("unsupported worker continuity contract in state file")
+    if not isinstance(state["used_reviewer_ids"], list):
+        fail("state used_reviewer_ids must be a list")
     return state
 
 
@@ -91,6 +141,45 @@ def append_decision(log_path: Path, point: str, outcome: str, reason: str) -> No
         handle.write("\n")
 
 
+def require_worker_continuity(value: str | None) -> str:
+    continuity = require_text(value, "continuity")
+    if continuity == "exact_session":
+        fail("exact-session continuity is unsupported; use worker_identity_profile")
+    if continuity != SUPPORTED_WORKER_CONTINUITY:
+        fail(f"unsupported worker continuity contract: {continuity}")
+    return continuity
+
+
+def require_worker_recorded(state: dict[str, Any], *, action: str) -> dict[str, Any]:
+    worker = state.get("worker")
+    if not worker:
+        fail(f"record the implementation worker before {action}")
+    if worker.get("provider") is None or worker.get("model") is None:
+        fail("enrich the recorded worker with provider and model first")
+    return worker
+
+
+def require_implementation_started(state: dict[str, Any], *, action: str) -> None:
+    if state.get("implementation_started_at") is not None:
+        return
+    if state.get("legacy_in_progress"):
+        return
+    fail(f"start implementation before {action}")
+
+
+def require_worker_match(state: dict[str, Any], args: argparse.Namespace) -> dict[str, str]:
+    worker = require_worker_recorded(state, action="worker-driven lifecycle transitions")
+    worker_id = require_text(getattr(args, "worker_id", None), "worker-id")
+    worker_profile = require_text(getattr(args, "worker_profile", None), "worker-profile")
+    if worker["id"] != worker_id or worker["profile"] != worker_profile:
+        fail("worker identity/profile does not match the recorded implementation worker")
+    worker_provider = require_text(getattr(args, "worker_provider", None), "worker-provider")
+    worker_model = require_text(getattr(args, "worker_model", None), "worker-model")
+    if worker["provider"] != worker_provider or worker["model"] != worker_model:
+        fail("worker provider/model does not match the recorded implementation worker")
+    return worker
+
+
 def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     if path.exists():
@@ -113,7 +202,7 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
         "needs_fix": False,
         "local_review_closed": False,
         "final_unreviewed_fix": False,
-        "stage": "implementing",
+        "stage": "worker_selection",
         "pr_url": None,
         "pr_head_sha": None,
         "closing_reference": None,
@@ -138,8 +227,99 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
         },
         "task_close": None,
         "history": [],
+        "worker": None,
+        "worker_continuity": SUPPORTED_WORKER_CONTINUITY,
+        "active_reviewer": None,
+        "used_reviewer_ids": [],
+        "check_repair_count": 0,
+        "check_repairs": [],
+        "implementation_started_at": None,
+        "legacy_in_progress": False,
     }
     add_event(state, "initialized")
+    save_state(path, state)
+    return state
+
+
+def cmd_record_worker(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    worker_id = require_text(args.worker_id, "worker-id")
+    worker_profile = require_text(args.worker_profile, "worker-profile")
+    worker_provider = require_text(args.worker_provider, "worker-provider")
+    worker_model = require_text(args.worker_model, "worker-model")
+    continuity = require_worker_continuity(args.continuity)
+    existing_worker = state["worker"]
+    if existing_worker is None:
+        if state["stage"] != "worker_selection" or state.get("implementation_started_at") is not None:
+            fail("first-time worker recording is allowed only in worker_selection")
+        state["worker"] = {
+            "id": worker_id,
+            "profile": worker_profile,
+            "provider": worker_provider,
+            "model": worker_model,
+            "recorded_at": now_utc(),
+        }
+        state["worker_continuity"] = continuity
+        state["stage"] = "worker_selected"
+        add_event(
+            state,
+            "worker_recorded",
+            worker_id=worker_id,
+            worker_profile=worker_profile,
+            worker_provider=worker_provider,
+            worker_model=worker_model,
+            continuity=continuity,
+        )
+        save_state(path, state)
+        return state
+
+    if state["worker_continuity"] != continuity:
+        fail("worker continuity contract does not match the recorded implementation worker")
+    if existing_worker["id"] != worker_id or existing_worker["profile"] != worker_profile:
+        fail("implementation worker identity/profile does not match the recorded worker")
+    existing_provider = existing_worker.get("provider")
+    existing_model = existing_worker.get("model")
+    if existing_provider is not None or existing_model is not None:
+        fail("implementation worker is already recorded")
+    existing_worker["provider"] = worker_provider
+    existing_worker["model"] = worker_model
+    existing_worker["enriched_at"] = now_utc()
+    add_event(
+        state,
+        "worker_enriched",
+        worker_id=worker_id,
+        worker_profile=worker_profile,
+        worker_provider=worker_provider,
+        worker_model=worker_model,
+        continuity=continuity,
+    )
+    save_state(path, state)
+    return state
+
+
+def cmd_start_implementation(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    if state.get("legacy_in_progress"):
+        fail("start-implementation is unavailable for legacy in-progress states")
+    if state["stage"] != "worker_selected":
+        if state["stage"] == "implementing" and state.get("implementation_started_at") is not None:
+            fail("implementation is already started")
+        require_worker_recorded(state, action="starting implementation")
+        fail("implementation can start only after worker selection")
+    worker = require_worker_match(state, args)
+    started_at = now_utc()
+    state["implementation_started_at"] = started_at
+    state["stage"] = "implementing"
+    add_event(
+        state,
+        "implementation_started",
+        worker_id=worker["id"],
+        worker_profile=worker["profile"],
+        worker_provider=worker["provider"],
+        worker_model=worker["model"],
+    )
     save_state(path, state)
     return state
 
@@ -147,6 +327,8 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_start_review(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
+    require_worker_recorded(state, action="starting review")
+    require_implementation_started(state, action="starting review")
     if state["local_review_closed"]:
         fail("local review is already closed")
     if state["active_review"]:
@@ -156,11 +338,23 @@ def cmd_start_review(args: argparse.Namespace) -> dict[str, Any]:
     max_reviews = review_limit(state)
     if state["review_count"] >= max_reviews:
         fail("review limit reached; another completed review is forbidden")
+    reviewer_id = require_text(args.reviewer_id, "reviewer-id")
+    reviewer_profile = require_text(args.reviewer_profile, "reviewer-profile")
+    if reviewer_id in state["used_reviewer_ids"]:
+        fail("reviewer identity was already used in this Issue")
     round_number = state["review_count"] + 1
     state["active_review"] = True
     state["active_review_number"] = round_number
+    state["active_reviewer"] = {"id": reviewer_id, "profile": reviewer_profile}
+    state["used_reviewer_ids"].append(reviewer_id)
     state["stage"] = "local_review"
-    add_event(state, "review_started", round=round_number)
+    add_event(
+        state,
+        "review_started",
+        round=round_number,
+        reviewer_id=reviewer_id,
+        reviewer_profile=reviewer_profile,
+    )
     save_state(path, state)
     return state
 
@@ -172,10 +366,19 @@ def cmd_abort_review(args: argparse.Namespace) -> dict[str, Any]:
         fail("no active review to abort")
     reason = require_text(args.reason, "reason")
     round_number = state["active_review_number"]
+    reviewer = state["active_reviewer"] or {}
     state["active_review"] = False
     state["active_review_number"] = None
+    state["active_reviewer"] = None
     state["stage"] = "awaiting_review"
-    add_event(state, "review_aborted", attempted_round=round_number, reason=reason)
+    add_event(
+        state,
+        "review_aborted",
+        attempted_round=round_number,
+        reviewer_id=reviewer.get("id"),
+        reviewer_profile=reviewer.get("profile"),
+        reason=reason,
+    )
     save_state(path, state)
     return state
 
@@ -183,16 +386,20 @@ def cmd_abort_review(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_finish_review(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
+    require_worker_recorded(state, action="finishing review")
+    require_implementation_started(state, action="finishing review")
     if not state["active_review"]:
         fail("no active review to finish")
     report = require_text(args.report, "report")
     summary = require_text(args.summary, "summary")
     round_number = state["active_review_number"]
+    reviewer = state["active_reviewer"] or {}
     if round_number != state["review_count"] + 1 or round_number > review_limit(state):
         fail("active review number is inconsistent with the completed count")
     state["review_count"] = round_number
     state["active_review"] = False
     state["active_review_number"] = None
+    state["active_reviewer"] = None
     state["last_review_outcome"] = args.outcome
     if args.outcome == "pass":
         state["needs_fix"] = False
@@ -201,7 +408,16 @@ def cmd_finish_review(args: argparse.Namespace) -> dict[str, Any]:
     else:
         state["needs_fix"] = True
         state["stage"] = "fixing"
-    add_event(state, "review_finished", round=round_number, outcome=args.outcome, report=report, summary=summary)
+    add_event(
+        state,
+        "review_finished",
+        round=round_number,
+        reviewer_id=reviewer.get("id"),
+        reviewer_profile=reviewer.get("profile"),
+        outcome=args.outcome,
+        report=report,
+        summary=summary,
+    )
     save_state(path, state)
     return state
 
@@ -209,10 +425,12 @@ def cmd_finish_review(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_record_fix(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
+    require_implementation_started(state, action="recording a fix")
     if state["active_review"]:
         fail("finish the active review before recording a fix")
     if not state["needs_fix"]:
         fail("no reviewer-requested fix is pending")
+    require_worker_match(state, args)
     report = require_text(args.report, "report")
     validation = require_text(args.validation, "validation")
     state["needs_fix"] = False
@@ -231,6 +449,7 @@ def cmd_record_fix(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_record_pr(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
+    require_implementation_started(state, action="recording a PR")
     if not state["local_review_closed"] or state["active_review"] or state["needs_fix"]:
         fail("local review must be closed with no active review or pending fix")
     if state["pr_url"] is not None:
@@ -290,10 +509,12 @@ def cmd_mark_feedback_fetched(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_record_remote_assessment(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
+    require_implementation_started(state, action="recording remote assessment")
     if state["remote_feedback_fetched_at"] is None:
         fail("record the one allowed remote feedback fetch first")
     if state["remote_assessment"] is not None:
         fail("remote feedback assessment is already recorded")
+    require_worker_match(state, args)
     report = require_text(args.report, "report")
     state["remote_assessment"] = {"outcome": args.outcome, "report": report, "at": now_utc()}
     if args.outcome == "clean":
@@ -325,6 +546,7 @@ def cmd_resolve_blocked(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_record_remote_fix(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
+    require_implementation_started(state, action="recording remote fix")
     assessment_requires_changes = bool(state["remote_assessment"] and state["remote_assessment"]["outcome"] == "changes")
     resolution_requires_changes = bool(state["blocked_resolution"] and state["blocked_resolution"]["decision"] == "changes")
     if not assessment_requires_changes and not resolution_requires_changes:
@@ -335,6 +557,7 @@ def cmd_record_remote_fix(args: argparse.Namespace) -> dict[str, Any]:
         checks = state["checks_evidence"]
         if not checks or checks["result"] != "fail" or checks["head_sha"] != state["pr_head_sha"]:
             fail("another remote repair is allowed only after failed checks on the current PR HEAD")
+    require_worker_match(state, args)
     head_sha = require_text(args.head_sha, "head-sha")
     validation = require_text(args.validation, "validation")
     if head_sha == state["pr_head_sha"]:
@@ -348,6 +571,52 @@ def cmd_record_remote_fix(args: argparse.Namespace) -> dict[str, Any]:
     state["remote_fixes"].append({"number": repair_number, "head_sha": head_sha, "validation": validation, "at": state["remote_fix_completed_at"]})
     state["stage"] = "merge_ready"
     add_event(state, "remote_fix_recorded", number=repair_number, head_sha=head_sha, validation=validation)
+    save_state(path, state)
+    return state
+
+
+def cmd_record_check_repair(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    require_implementation_started(state, action="recording check repair")
+    if state["pr_url"] is None:
+        fail("record the PR before check repair")
+    if state["merged_at"] is not None:
+        fail("check repair is not allowed after merge")
+    checks = state["checks_evidence"]
+    if not checks or checks["result"] != "fail" or checks["head_sha"] != state["pr_head_sha"]:
+        fail("check repair requires failed checks on the current PR HEAD")
+    require_worker_match(state, args)
+    head_sha = require_text(args.head_sha, "head-sha")
+    if head_sha == state["pr_head_sha"]:
+        fail("check repair must record a new PR HEAD SHA")
+    validation = require_text(args.validation, "validation")
+    evidence = require_text(args.evidence, "evidence")
+    previous_head_sha = state["pr_head_sha"]
+    repair_number = state["check_repair_count"] + 1
+    state["pr_head_sha"] = head_sha
+    state["checks_passed"] = False
+    state["checks_evidence"] = None
+    state["check_repair_count"] = repair_number
+    state["check_repairs"].append(
+        {
+            "number": repair_number,
+            "previous_head_sha": previous_head_sha,
+            "head_sha": head_sha,
+            "validation": validation,
+            "evidence": evidence,
+            "at": now_utc(),
+        }
+    )
+    add_event(
+        state,
+        "check_repair_recorded",
+        number=repair_number,
+        previous_head_sha=previous_head_sha,
+        head_sha=head_sha,
+        validation=validation,
+        evidence=evidence,
+    )
     save_state(path, state)
     return state
 
@@ -498,8 +767,27 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--manager-id", required=True)
     init.set_defaults(handler=cmd_init)
 
+    worker = commands.add_parser("record-worker", help="record the one implementation worker and continuity contract")
+    add_state_file(worker)
+    worker.add_argument("--worker-id", required=True)
+    worker.add_argument("--worker-profile", required=True)
+    worker.add_argument("--worker-provider", required=True)
+    worker.add_argument("--worker-model", required=True)
+    worker.add_argument("--continuity", required=True)
+    worker.set_defaults(handler=cmd_record_worker)
+
+    start_implementation = commands.add_parser("start-implementation", help="record the worker-selected implementation start boundary")
+    add_state_file(start_implementation)
+    start_implementation.add_argument("--worker-id", required=True)
+    start_implementation.add_argument("--worker-profile", required=True)
+    start_implementation.add_argument("--worker-provider", required=True)
+    start_implementation.add_argument("--worker-model", required=True)
+    start_implementation.set_defaults(handler=cmd_start_implementation)
+
     start = commands.add_parser("start-review", help="reserve the next reviewer round")
     add_state_file(start)
+    start.add_argument("--reviewer-id", required=True)
+    start.add_argument("--reviewer-profile", required=True)
     start.set_defaults(handler=cmd_start_review)
 
     abort = commands.add_parser("abort-review", help="abort a reviewer attempt without consuming a round")
@@ -516,6 +804,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     fix = commands.add_parser("record-fix", help="record the worker fix after findings")
     add_state_file(fix)
+    fix.add_argument("--worker-id", required=True)
+    fix.add_argument("--worker-profile", required=True)
+    fix.add_argument("--worker-provider", required=True)
+    fix.add_argument("--worker-model", required=True)
     fix.add_argument("--report", required=True)
     fix.add_argument("--validation", required=True)
     fix.set_defaults(handler=cmd_record_fix)
@@ -538,6 +830,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     assessment = commands.add_parser("record-remote-assessment", help="record the one remote-feedback assessment")
     add_state_file(assessment)
+    assessment.add_argument("--worker-id", required=True)
+    assessment.add_argument("--worker-profile", required=True)
+    assessment.add_argument("--worker-provider", required=True)
+    assessment.add_argument("--worker-model", required=True)
     assessment.add_argument("--outcome", choices=("clean", "changes", "blocked"), required=True)
     assessment.add_argument("--report", required=True)
     assessment.set_defaults(handler=cmd_record_remote_assessment)
@@ -550,9 +846,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     remote_fix = commands.add_parser("record-remote-fix", help="record manager-validated remote changes")
     add_state_file(remote_fix)
+    remote_fix.add_argument("--worker-id", required=True)
+    remote_fix.add_argument("--worker-profile", required=True)
+    remote_fix.add_argument("--worker-provider", required=True)
+    remote_fix.add_argument("--worker-model", required=True)
     remote_fix.add_argument("--head-sha", required=True)
     remote_fix.add_argument("--validation", required=True)
     remote_fix.set_defaults(handler=cmd_record_remote_fix)
+
+    check_repair = commands.add_parser("record-check-repair", help="record an Issue-caused repair for failed checks on the current PR HEAD")
+    add_state_file(check_repair)
+    check_repair.add_argument("--worker-id", required=True)
+    check_repair.add_argument("--worker-profile", required=True)
+    check_repair.add_argument("--worker-provider", required=True)
+    check_repair.add_argument("--worker-model", required=True)
+    check_repair.add_argument("--head-sha", required=True)
+    check_repair.add_argument("--validation", required=True)
+    check_repair.add_argument("--evidence", required=True)
+    check_repair.set_defaults(handler=cmd_record_check_repair)
 
     checks = commands.add_parser("record-checks", help="record required checks for current PR HEAD")
     add_state_file(checks)

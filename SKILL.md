@@ -56,6 +56,8 @@ The root agent of the Issue task is its manager and owns one Issue from verifica
 
 The standard Issue task contains this root manager, exactly one persistent implementation worker, and one fresh reviewer for each local-review round. Do not add another agent role. When a reviewer's final report has been consumed, release it if the runtime supports that operation; otherwise verify that it has no active turn and rely on closing the Issue task as the final resource-reclamation boundary. Keep the implementation worker available for the entire Issue.
 
+When adapting this workflow onto Hermes Profiles/Kanban, keep the portable roles (`manager`, `worker`, `reviewer`, `remote_worker`) distinct from Hermes profile names and follow [references/hermes-profiles-kanban.md](references/hermes-profiles-kanban.md). On Hermes, `remote_worker` is still the same implementation worker lifecycle, not a fourth agent.
+
 ### 1. Establish scope
 
 - Read the full Issue, linked dependencies, repository instructions, relevant code, tests, and current CI expectations.
@@ -67,7 +69,7 @@ The standard Issue task contains this root manager, exactly one persistent imple
 
 ### 2. Dispatch implementation
 
-- Spawn one fresh worker subagent for this Issue. Reuse the same worker for the entire Issue so it retains implementation context: initial implementation, all local-review fixes, remote-feedback classification and fixes, and every Issue-caused required-check repair. Do not spawn a replacement or separate remote-feedback worker.
+- Spawn one fresh worker subagent for this Issue. Reuse the same worker for the entire Issue so it retains implementation context: initial implementation, all local-review fixes, remote-feedback classification and fixes, and every Issue-caused required-check repair. Before implementation begins, record that worker's identity/profile/provider/model in the state script, then run `start-implementation` immediately before dispatch. The state machine audits declared lifecycle order; it cannot observe arbitrary out-of-band file edits. Do not spawn a replacement or separate remote-feedback worker.
 - The worker prompt must require explicit assumptions, the smallest correct change, surgical file ownership, TDD for behavior changes, focused plus required regression tests, and evidence-backed success criteria. Every implementation and later fix must trace directly to at least one numbered acceptance criterion and must not introduce a security framework or speculative abstraction. State that other agents may share the repository and give the exact worktree and branch.
 - For a bug fix, require the worker to search for sibling call sites or implementations with the same defect shape. The smallest correct change is the smallest complete fix for the mapped acceptance criterion: repair every affected in-scope sibling and list each inspected exclusion with evidence that it is unaffected or outside that criterion. Do not broaden the change to merely similar code.
 - For a bug fix, require red/green regression evidence: the new regression test must fail for the expected reason on the pre-fix behavior or with the fix temporarily removed, then pass with the fix applied. Feature-only work does not require this pre-fix failure proof.
@@ -79,13 +81,13 @@ The standard Issue task contains this root manager, exactly one persistent imple
 
 Use `scripts/review_cycle.py` for every transition. The script is authoritative for the count.
 
-1. Before each reviewer is spawned, run `start-review`. It reserves the next round without incrementing the completed count. If the reviewer cannot start or return a report, use `abort-review --reason ...`; the aborted attempt remains in history but does not consume a round. After recording the abort and consuming any available failure evidence, release that attempted reviewer when supported and never reuse it in another round.
+1. Before each reviewer is spawned, run `start-review --reviewer-id <REVIEWER_ID> --reviewer-profile <REVIEWER_PROFILE>`. It reserves the next round without incrementing the completed count. If the reviewer cannot start or return a report, use `abort-review --reason ...`; the aborted attempt remains in history but does not consume a round. After recording the abort and consuming any available failure evidence, release that attempted reviewer when supported and never reuse it in another round.
 2. Spawn a **fresh reviewer subagent for that round**. The reviewer must not edit files. Give it the Issue, numbered acceptance criteria, non-goals, the exact user override or `none`, project instructions, current complete diff, worker report, and test evidence, but not any prior reviewer report or conclusion. Require it to inspect the current code, complete diff, and tests independently before using the worker report to check claimed coverage. Require the default review policy unless the supplied user override explicitly broadens it. Each finding must give its category, acceptance-criterion ID, realistic reproduction, expected and actual behavior, file/line evidence, impact, and smallest required correction. A correction must not introduce a security framework or speculative abstraction. Anything that fails the policy is not a finding.
 3. Read the complete reviewer report and verify every proposed finding against both the code and the default review policy. Reject speculative or unmapped items with a short reason and never copy them into the worker's requirements. `finish-review` requires the report reference and a nonempty summary; it increments the completed count and refuses a sixteenth round:
    - If there are no valid findings, record `finish-review --outcome pass` and continue to PR preparation.
    - If there are valid findings, record `finish-review --outcome changes`, then send the existing worker a targeted modification prompt containing accepted findings, rejected findings with reasons, exact acceptance criteria, and required tests.
    - Before `finish-review`, the manager may ask the same reviewer for evidence or clarification within that round. After `finish-review` records either outcome, release that one-shot reviewer when supported. Never reuse a local reviewer in another round.
-4. Read the worker's modification report, inspect the diff, rerun required validation, and record `record-fix` with both the report reference and validation evidence.
+4. Read the worker's modification report, inspect the diff, rerun required validation, and record `record-fix --worker-id <WORKER_ID> --worker-profile <WORKER_PROFILE> --worker-provider <WORKER_PROVIDER> --worker-model <WORKER_MODEL>` with both the report reference and validation evidence.
 5. If fewer than fifteen reviews have run, start the next round with another fresh reviewer. If the fifteenth review found issues, complete this one final worker fix and then proceed without a sixteenth review. The final fix is deliberately unreviewed but must still pass required tests.
 
 A review round means one completed reviewer report. Worker fixes, test runs, status reads, PR comments, and Copilot handling do not increment the local count. Never reset the count within an Issue.
@@ -102,7 +104,7 @@ A review round means one completed reviewer report. Worker fixes, test runs, sta
 
 - Wait until 10 full minutes have elapsed after Ready for review. During this window, monitor required checks without shortening the wait.
 - Fetch GitHub checks, reviews, inline review threads, Issue comments, and Copilot comments once after the window, then record that fetch with the state script. It rejects an early or second fetch. Keep required-check results separate as merge-gate evidence; do not classify them as findings.
-- Whenever a required check fails after PR publication, attribute the failure before attempting a repair. Compare its logs and failing scope with the Issue diff; when attribution remains uncertain, reproduce the same check on a clean checkout of the supplied default-branch baseline. Re-run a failed check at most once, and only when the evidence indicates a transient infrastructure failure or genuine flake. Send only an Issue-caused, safely repairable failure to the same Issue worker; record baseline or infrastructure evidence and escalate any failure that still blocks the merge.
+- Whenever a required check fails after PR publication, attribute the failure before attempting a repair. Compare its logs and failing scope with the Issue diff; when attribution remains uncertain, reproduce the same check on a clean checkout of the supplied default-branch baseline. Re-run a failed check at most once, and only when the evidence indicates a transient infrastructure failure or genuine flake. Send only an Issue-caused, safely repairable failure to the same Issue worker; record the repair with `record-check-repair` using the same recorded worker identity/profile/provider/model, preserve the existing Ready/feedback timestamps, record baseline or infrastructure evidence, and escalate any failure that still blocks the merge.
 - Give the **same Issue worker** the PR HEAD SHA, fetched feedback, the same numbered acceptance criteria, non-goals, exact user override or `none`, and default review policy used by local reviewers. Have it evaluate every fetched review, thread, Issue comment, and Copilot comment as `valid`, `invalid`, or `ambiguous`, with reasons. A comment is `valid` only when it passes the same realistic-reproduction, allowed-category, acceptance-mapping, and smallest-correction tests as a local finding. Policy-excluded or unmapped comments are `invalid`; use `ambiguous` only for a plausible blocker that lacks enough evidence to decide safely. The worker may implement only confirmed-safe `valid` changes, must not introduce a security framework or speculative abstraction, and must report modifications and targeted test results.
 - The manager reads that report, independently rechecks each disposition against the shared policy, and verifies the diff. Ambiguous or unsafe blocking feedback must be recorded as blocked and reported to the user in plain language instead of guessed. After an explicit user/controller decision, record the audited resolution as either `merge_ready` or `remote_fix`; do not refetch comments.
 - The Issue worker may edit assigned files and run tests only; it must not commit, push, mutate the PR, merge, or clean branches/worktrees. The manager inspects its changes and owns all Git/GitHub mutations.
@@ -123,7 +125,7 @@ This single-window rule is an explicit exception to workflows that normally rest
 
 ## Model configuration
 
-Every role's model is configured in one place: [`config/models.json`](config/models.json). The file maps role names to model names:
+Every role's model is configured in one place: [`config/models.json`](config/models.json). The file maps portable role names to model names:
 
 - `manager` — the Issue manager;
 - `worker` — the implementation worker (coder);
@@ -131,6 +133,8 @@ Every role's model is configured in one place: [`config/models.json`](config/mod
 - `remote_worker` — the worker during the remote-feedback phase.
 
 A value of `null` or a missing key makes that role fall back to the agent's own current model. A string value fixes that role to the named model. Cross-model review is optional: assigning different models to the worker and reviewer is allowed but never required. With no configuration, every role uses the agent's own current model, exactly as before.
+
+On Hermes Profiles/Kanban, choose the Hermes profile for the role first. That selected profile is authoritative for provider/model/tool state. A `null` role-model entry leaves the selected profile unchanged. If a non-null entry would require provider guessing or conflicts with the selected profile, fail closed instead of approximating. See [references/hermes-profiles-kanban.md](references/hermes-profiles-kanban.md).
 
 ## Quality Gates
 
