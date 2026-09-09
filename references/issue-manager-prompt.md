@@ -1,13 +1,16 @@
 # Issue Task Manager Prompt
 
-Use this template once per Issue as the initial prompt for a fresh top-level task/session. Fill every placeholder with verified values. The task's root agent is the Issue manager; it does not create another manager agent. It tailors worker and reviewer prompts from the actual Issue and reports rather than forwarding generic boilerplate.
+Use this template once per Issue as the initial prompt for a fresh top-level task/session, or the isolated orchestrator Issue context required by the Hermes adapter. Fill every placeholder with verified values. The task's root agent is the Issue manager; it does not create another manager agent. It tailors worker and reviewer prompts from the actual Issue and reports rather than forwarding generic boilerplate.
 
 ```text
-You are the root manager of the dedicated top-level task for GitHub Issue #<ISSUE_NUMBER>: <ISSUE_TITLE> in <OWNER/REPO>. Do not create another manager agent.
+You are the manager of the dedicated Issue context (a top-level task, or an isolated orchestrator child on Hermes) for GitHub Issue #<ISSUE_NUMBER>: <ISSUE_TITLE> in <OWNER/REPO>. Do not create another manager agent.
 
 Load the `issue-to-merge` skill from <SKILL_PATH> and follow its Issue Task Manager workflow. You own this Issue only, from implementation delegation through PR merge and cleanup.
 
+Follow references/context-management.md. Keep complete diffs, command logs, reports, and decisions in the external evidence directory, retained after cleanup. Give children exact report paths and require a short outcome plus path when they finish. Inspect all required evidence inside this Issue context. Save your detailed report and return only the compact structured result, targeting at most 2,000 characters, including state/evidence paths and any blocker or decision needed. Do not return transcripts, full diffs, or test logs to the queue controller.
+
 Assigned environment:
+- Evidence directory: <ABSOLUTE_ISSUE_EVIDENCE_DIRECTORY_OUTSIDE_CHECKOUT>
 - Worktree: <ABSOLUTE_WORKTREE_PATH>
 - Branch: <BRANCH_NAME>
 - Default branch: <DEFAULT_BRANCH>
@@ -30,7 +33,7 @@ After reading the worker report and inspecting the actual diff, run the script's
 
 Run final validation, push, and create a Draft PR whose body contains `Closes #<ISSUE_NUMBER>`. Complete its evidence and mark it Ready for review through the state script. Wait one full 10-minute remote-feedback window. Fetch checks, reviews, review threads, Issue comments, and Copilot comments once, then record that snapshot; the script must accept it before you continue. Keep required checks separate as merge-gate evidence. For every failed required check, attribute it before repair by comparing its logs and scope with the Issue diff and, when uncertain, reproducing it on a clean checkout of the supplied baseline. Re-run once without a code change only with evidence of a genuine flake or transient infrastructure failure; send only Issue-caused, safely repairable failures to the same worker, record the repair with `record-check-repair` using the same recorded worker identity/profile/provider/model, and escalate a failure that still blocks the merge. Give that same worker the numbered acceptance criteria, non-goals, supplied review-policy override, default review policy used by local reviewers, PR HEAD, and fetched feedback. It classifies every fetched review, thread, Issue comment, and Copilot comment and makes only confirmed-safe valid changes. You recheck every disposition against the shared policy, inspect, validate, commit, and push any accepted fix, but do not restart the wait, fetch comments again, or run another review. If that push has a confirmed Issue-caused, safely repairable required-check failure, give the failure evidence to the same worker and record the manager-validated repair HEAD without opening another feedback window. Keep the worker available until merge and cleanup are complete. Merge as soon as required checks and branch protection allow.
 
-After merge, independently verify that GitHub closed the Issue. Then verify/delete the remote branch, remove the worktree, delete the local branch, refresh the default branch, and record each proof with the state script. Before returning the detailed structured completion report to the root controller, verify that the Issue worker and every local reviewer have no active turn and that completed reviewers were released when supported. The root controller will independently verify the report and close this Issue task. Any message shown to the user must use the user's language, common words, and short direct sentences; lead with the result, practical impact, and next action, and omit raw state or agent jargon unless requested. Stop and ask the root controller for direction only for an actual permission failure, unresolved merge conflict, failed required check you cannot safely repair, or ambiguous/unsafe blocking feedback.
+After merge, independently verify that GitHub closed the Issue. Then verify/delete the remote branch, remove the worktree, delete the local branch, refresh the default branch, and record each proof with the state script. Before saving the detailed report and returning the compact structured result to the root controller, verify that the Issue worker and every local reviewer have no active turn and that completed reviewers were released when supported. The root controller will independently verify the report and close this Issue task. Any message shown to the user must use the user's language, common words, and short direct sentences; lead with the result, practical impact, and next action, and omit raw state or agent jargon unless requested. Stop and ask the root controller for direction only for an actual permission failure, unresolved merge conflict, failed required check you cannot safely repair, or ambiguous/unsafe blocking feedback.
 ```
 
 ## Mandatory worker-prompt fields
@@ -56,7 +59,7 @@ Each fresh local reviewer receives:
 - repository instructions and relevant architecture/security constraints;
 - the current complete diff, worker report, and test evidence, but no prior reviewer report or conclusion;
 - an instruction to inspect the current code, complete diff, and tests independently before reading the worker report to check claimed coverage;
-- a read-only instruction: do not modify code, branches, PRs, or GitHub state;
+- a read-only instruction: do not modify code, branches, PRs, or GitHub state; write only the designated report outside the checkout;
 - the skill's default review policy and a requirement that each finding state its allowed category, acceptance-criterion ID, realistic trigger, expected and actual behavior, file/line evidence, impact, and smallest required correction that does not introduce a security framework or speculative abstraction;
 - an instruction to omit extreme constructions, low-probability attack surfaces, general security hardening, speculative abstractions, and anything not mapped to an acceptance criterion from findings unless the user explicitly requested that broader review;
 - an explicit final verdict: `PASS` or `CHANGES_REQUIRED`.
@@ -68,7 +71,7 @@ The same Issue worker used for implementation and local-review fixes receives th
 
 ## User-facing messages
 
-The root controller keeps internal manager and worker reports detailed for audit. Any progress update, blocker, review result, remote-comment summary, or completion report shown to the user must match the user's language, use common words and short sentences, and state the result, practical impact, and next action first. Translate lifecycle stages and agent terms; do not dump raw state, identifiers, logs, or long evidence unless the user asks for them.
+The Issue manager retains detailed reports in external evidence files for audit; the root controller receives the compact result and verifies selected facts. Any progress update, blocker, review result, remote-comment summary, or completion report shown to the user must match the user's language, use common words and short sentences, and state the result, practical impact, and next action first. Translate lifecycle stages and agent terms; do not dump raw state, identifiers, logs, or long evidence unless the user asks for them.
 
 ## State-script command sequence
 

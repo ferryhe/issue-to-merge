@@ -1182,16 +1182,16 @@ class SkillMetadataTests(unittest.TestCase):
         # Issue #12 requires the document to actually cover the four Hermes runtime
         # adaptations, not merely exist as an empty shell. Assert each section's
         # key phrase is present so future edits cannot silently drop a section.
-        # 1. Default flat hierarchy; higher max_spawn_depth can permit nesting.
-        self.assertIn("Flatten the role hierarchy", doc)
-        self.assertIn("max_spawn_depth: 1", doc)
-        self.assertIn("higher configured depth can permit orchestrator nesting", doc)
+        # 1. A manager needs an isolated context with nested delegation enabled.
+        self.assertIn('role="orchestrator"', doc)
+        self.assertIn("max_spawn_depth: 2", doc)
+        self.assertIn("orchestrator_enabled: true", doc)
         self.assertIn("worker and reviewers must not delegate further", doc)
-        # 2. Respect the ~600s delegate timeout.
-        self.assertIn("600", doc)
+        # 2. Child timeout is explicitly configured, not a fixed legacy cap.
+        self.assertIn("child_timeout_seconds: 0", doc)
         self.assertIn("timeout", doc)
         # 3. Bootstrap new commands from the worktree's state script.
-        self.assertIn("state script", doc)
+        self.assertIn("state script", doc.lower())
         self.assertIn("worktree", doc)
         # 4. Avoid `python3 | python3` pipelines.
         self.assertIn("pipeline", doc)
