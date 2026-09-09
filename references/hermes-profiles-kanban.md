@@ -14,7 +14,8 @@ These rules are grounded in the Hermes documentation cached on 2026-09-04:
   profile, but each dispatch is a new run.
 - Delegation currently defaults `child_timeout_seconds: 0`; positive values add
   a wall-clock cap.
-- `max_spawn_depth` defaults to a flat topology and does not create extra roles.
+- `max_spawn_depth` defaults to a flat topology; this workflow requires at least
+  depth 2 and an isolated orchestrator manager, as specified in the runtime adapter.
 
 If a local Hermes install behaves differently, stop and verify the installed
 version before approximating this adapter.
@@ -116,8 +117,11 @@ must fail closed.
 
 Use this adapter shape:
 
-1. Keep the root Issue task/session as the manager. It owns Git, GitHub, PR
-   state, required-check attribution, merge, and cleanup.
+1. The main chat creates one fresh isolated manager with `role="orchestrator"`
+   for this Issue, following [hermes-runtime.md](hermes-runtime.md). Resolve its
+   profile/model before dispatch. The manager owns Git, GitHub, PR state,
+   required-check attribution, merge, and cleanup inside its own context.
+   The main chat owns only the queue and final independent verification.
 2. Immediately before dispatching the implementation worker, run
    `record-worker` and then `start-implementation` with the selected worker
    route. The state machine audits declared lifecycle order; it cannot observe arbitrary out-of-band file edits.
@@ -130,7 +134,9 @@ Use this adapter shape:
 5. Route remote feedback and any Issue-caused check repair back to the same
    worker id, same worker profile, and same resolved provider/model. Before the
    new run acts, it must read the complete durable task context from the Kanban
-   task body/comment/run history. Do not create a remote-only worker.
+   task body/comment/run history. Store large evidence in referenced files and
+   have the worker read those files; do not copy that history into the queue
+   controller. Do not create a remote-only worker.
 6. Keep cleanup order manager-owned: remote branch, worktree, local branch,
    refreshed default branch, then task closure proof.
 
@@ -179,8 +185,10 @@ python scripts/review_cycle.py record-check-repair \
 
 ## Topology limits
 
-`max_spawn_depth` does not change the skill topology. Even if Hermes allows a
-larger depth, this adapter remains:
+Require `max_spawn_depth >= 2` with orchestration enabled so the queue controller
+can create an isolated manager that coordinates its own children. Missing
+capabilities must stop dispatch; do not flatten manager duties into the main chat.
+Inside each Issue context this adapter retains:
 
 - one manager;
 - one persistent worker identity/profile; and

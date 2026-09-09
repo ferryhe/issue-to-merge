@@ -1,67 +1,70 @@
-# Hermes Runtime Adaptation
+# Hermes Runtime Adapter
 
-`issue-to-merge` is runtime-agnostic, but running it on the Hermes Agent runtime
-surfaces a few Hermes-specific constraints. This document records the adaptations
-that made an end-to-end delivery succeed on Hermes, so the next run does not have
-to rediscover them.
+Use this adapter only on Hermes Agent. Read [hermes-profiles-kanban.md](hermes-profiles-kanban.md) for profile routing, durable worker continuity, and the state-script identity gates before starting an Issue.
 
-## 1. Flatten the role hierarchy
+## Isolated Issue manager
 
-Hermes defaults `max_spawn_depth: 1`, which is a flat topology. Current Hermes
-docs also say higher configured depth can permit orchestrator nesting. This
-skill does not use that flexibility. The skill's three-layer structure
-(controller → manager → worker/reviewer) therefore still cannot map one-to-one
-onto Hermes as authorization to add more roles.
+The main chat is the queue controller only. For each Issue it creates one fresh `delegate_task` manager with `role="orchestrator"`, the configured manager profile/model, and the filled Issue manager prompt. That manager delegates the persistent worker and fresh reviewers as leaf children. Code, diffs, tests, reports, and PR lifecycle work belong in its isolated context. Never flatten these duties into the main chat or create a second manager inside the Issue manager.
 
-Adaptation:
+Before dispatch, inspect the active session's delegation schema and effective configuration. Require orchestrator children, nesting enabled, and a spawn depth of at least 2. The corresponding Hermes installation settings are:
 
-- The root controller doubles as the Issue manager. It performs the manager's
-  duties directly instead of delegating them to a dedicated manager subagent.
-- The controller uses `delegate_task` directly to dispatch the one implementation
-  worker and each fresh reviewer as leaf agents.
-- The worker and reviewers must not delegate further. Any sub-work they would
-  otherwise hand off is done inline by the leaf agent itself.
-- A larger configured spawn depth is not permission to add scout, audit,
-  remote-only, or escalation roles. The skill topology stays root manager + one
-  leaf worker + fresh leaf reviewers only.
+```yaml
+delegation:
+  orchestrator_enabled: true
+  max_spawn_depth: 2
+  child_timeout_seconds: 0
+```
 
-## 2. Respect the delegate timeout
+These documented settings do not configure Hermes or prove the running session supports them. These are installation prerequisites, not permission to rewrite global settings during delivery. Start a fresh session after changing delegation settings. If nesting is unavailable, stop before Issue work and report the capability gap; do not fall back to the root acting as manager.
 
-Hermes currently documents `delegation.child_timeout_seconds` with a default of
-`0`, which means no wall-clock cap. A positive value imposes a hard cap on the
-child run. Older or local installs may still behave differently, including
-legacy deployments that effectively timed out around 600 seconds. Every task
-delegated to a worker or reviewer must therefore still be self-contained and
-bounded:
+Pass only the exact Issue assignment, authorization, runtime/skill paths, branch/worktree/baseline, evidence-directory and state-file paths, and concise duplicate-search metadata. Do not paste conversation history or previous Issue reports. Follow [context-management.md](context-management.md) for evidence files and compact results.
 
-- Give the exact file paths to read and change.
-- Give the exact change scope — what to modify and, just as important, what not
-  to touch.
-- Give the exact validation command to run, so the leaf agent can prove its work
-  without wandering.
+## Profiles, continuity, and workspace
 
-A vague or open-ended task is the main cause of subagent timeouts on Hermes.
+Resolve the manager profile/model before dispatch using the profile precedence in
+[hermes-profiles-kanban.md](hermes-profiles-kanban.md). Preserve the selected worker
+identity/profile/provider/model for the whole Issue. Hermes Kanban may re-dispatch
+that same durable worker task as a fresh run; require its complete durable task
+context and evidence paths, as the continuity contract specifies. Do not claim
+exact LLM-session continuity or assume another `delegate_task` call resumes a
+finished child. Preflight manager continuation through its durable Issue assignment
+if a decision is needed; if unavailable, report the gap instead of moving its work
+into the main chat.
 
-For the Hermes Profiles/Kanban adapter used by this skill, see
-[references/hermes-profiles-kanban.md](references/hermes-profiles-kanban.md).
+Every child must use the assigned Issue worktree. Check effective isolation
+settings so automatic child worktrees do not redirect edits away from that branch.
+Workers retain edit/test-only permissions regardless of runtime defaults. The
+worker and reviewers must not delegate further. Reviewers may write their
+designated evidence report outside the checkout but may not edit project files.
 
-## 3. Use the worktree's state script when bootstrapping a new command
+## Delegate timeout
 
-When the Issue itself adds a new command to `scripts/review_cycle.py` (for example,
-Issue #6 added `record-decision`), the main checkout's copy of the script does not
-yet have that command. Running the new command against the main checkout's older
-script fails.
+`child_timeout_seconds: 0` removes the child wall-clock cap; it does not disable failure detection, iteration limits, or cancellation. An explicit installation cap must cover a manager's whole Issue lifecycle, including the mandatory 10-minute remote-feedback wait. Keep assignments self-contained:
 
-Adaptation: run the new command from the worktree's own copy of the script
-(`<worktree>/scripts/review_cycle.py`), never from the main checkout, until the
-change is merged.
+- provide exact file paths and ownership;
+- provide the exact required change and non-goals; and
+- provide focused validation commands and expected evidence.
 
-## 4. Avoid `python3 | python3` pipelines
+If a reviewer fails before a usable report, record `abort-review`. A manager timeout or failure leaves the Issue incomplete and the queue stopped.
 
-On Hermes, a pipeline of the form `python3 ... | python3 ...` is flagged by the
-security scanner and requires approval; an approval that times out blocks the
-entire command. When running the state script, do not pipe its output into another
-interpreter.
+## Waiting and completion
 
-Adaptation: run the command directly, and filter or inspect the result with
-`grep` or `read_file` instead of a second `python3` process.
+Wait through the active runtime's completion mechanism. Where top-level delegation returns a background handle, retain it and yield for completion. Do not repeatedly poll transcripts or replay completed results. A supported controller heartbeat reads compact status only; otherwise record the limitation and use runtime progress notifications plus completion/error updates.
+
+The manager collects command results and verifies that no child turn or Issue-owned background command remains running before returning. It stores the detailed report outside the checkout and returns the structured result, targeting at most 2,000 characters, described in the context contract. Blocked and failed results include the decision needed and evidence path.
+
+Root verification uses selected state fields, GitHub merge/Issue/check metadata, exact branch/worktree existence checks, and runtime completion status. Check manager termination and inactive-descendant evidence before `mark-task-closed`; unknown status is not proof of completion. Do not load child transcripts, full reports, or test logs for routine monitoring.
+
+## Compression settings
+
+Context isolation is the workflow fix; compression is a separate installation setting. Inspect effective `compression.proactive_prune_tokens`, `compression.threshold_tokens`, and `compression.protect_last_n` using the installed version's semantics. Enable pruning at a positive token budget and choose a later compression trigger with room below the smallest context window used by the profiles. Do not rely only on a percentage of a very large model window. Preserve recent turns (the investigated installation used `protect_last_n: 12`) and save evidence before pruning. Do not copy redacted values or claim that updating the skill applied global cleanup settings.
+
+Runtime references: [Hermes delegation documentation](https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation/) and [configuration defaults](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/config_defaults.py). Check the installed version when its exposed capabilities differ.
+
+## State script during self-modification
+
+When the Issue adds a new command to `scripts/review_cycle.py`, the main checkout's older script does not yet contain it. Until merge, run the new command from the Issue worktree's copy of the script.
+
+## Command pipelines
+
+Do not pipe one Python interpreter invocation into another. Hermes may require approval for that shape and an approval timeout can block the workflow. Run the state command directly, then inspect or filter its output separately.

@@ -72,6 +72,8 @@ The helper enforces the review cap, exact Issue-closing reference, single remote
 
 ## Runtime compatibility
 
+Hermes uses one fresh isolated orchestrator manager per Issue (`max_spawn_depth >= 2`). The main chat keeps the queue and verifies completion. Detailed evidence stays in external files; manager results target at most 2,000 characters. See the [context contract](references/context-management.md). Verify effective Hermes settings and start a fresh session after changing delegation settings.
+
 Runtime tool names are intentionally not prescribed. Map each Issue to a fresh closable top-level task or session whose root agent is the manager. Inside it, map the persistent implementation worker and one-shot local reviewers to the runtime's subagent mechanism. The controller waits for the task, verifies its result, closes it, and verifies resource release before creating the next Issue task. The runtime must preserve role isolation, provide each agent with the required context, and enforce the mutation boundaries described in `SKILL.md`. When running on Hermes Agent, see [references/hermes-runtime.md](references/hermes-runtime.md) for general Hermes constraints and [references/hermes-profiles-kanban.md](references/hermes-profiles-kanban.md) for the Hermes Profiles/Kanban adapter, including profile-versus-`config/models.json` precedence and worker continuity.
 
 ## Design boundary

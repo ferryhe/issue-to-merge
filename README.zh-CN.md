@@ -72,6 +72,8 @@ python scripts/review_cycle.py status --state-file /path/to/issue-123.state.json
 
 ## 运行时兼容性
 
+Hermes 每个 Issue 使用独立的 orchestrator manager（`max_spawn_depth >= 2`）。主对话管理队列并核实完成状态；详细证据保存在外部文件，manager 返回结果目标不超过 2,000 字符。参见[上下文约定](references/context-management.md)。修改委派设置后，需核实实际配置并开启新会话。
+
 本项目不规定具体的工具名称。请把每个 Issue 映射为一个全新的可关闭顶层任务或会话，并让其根代理担任 manager；再把持续存在的 implementation worker 和一次性的 local reviewer 映射到运行时的子代理机制。Controller 等待任务完成、核验结果、关闭任务并确认资源释放后，才能创建下一个 Issue 任务。运行时必须保持角色隔离、向每个代理提供所需上下文，并执行 `SKILL.md` 中定义的写入权限边界。在 Hermes Agent 上运行时，请参见 [references/hermes-runtime.md](references/hermes-runtime.md) 了解通用 Hermes 约束，并参见 [references/hermes-profiles-kanban.md](references/hermes-profiles-kanban.md) 了解 Hermes Profiles/Kanban 适配方式，其中包含 profile 与 `config/models.json` 的优先级以及 worker 连续性约束。
 
 ## 设计边界
