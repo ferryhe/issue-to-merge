@@ -20,8 +20,9 @@
 - PR 必须先处于 Draft 状态，再进入 Ready for review，并准确包含 `Closes #<issue>`。
 - 只有一个十分钟的远程反馈窗口，统一覆盖 checks、reviews、threads、Issue comments 和 Copilot feedback。
 - 远程 comments 必须通过与本地审核相同的 finding 标准，之后才能接受并修改。
+- 每个行内 review thread 都必须有最终处理结论、在 GitHub 上标记为 resolved，并在合并前重新查询确认；未解决 thread 必须为零。
 - 面向用户的进度和结果使用与用户一致的语言以及简短大白话；完整证据保留在内部报告中。
-- 不绕过分支保护；存在有效 blocker 时不得合并。
+- 不绕过分支保护；存在有效 blocker 或未解决 review thread 时不得合并。
 - 必须验证 Issue 已关闭，并按顺序清理远程分支、worktree 和本地分支。
 - 必须验证当前 Issue 任务已经关闭，之后才能开始下一个 Issue。
 - `scripts/review_cycle.py` 使用确定性的 JSON 状态机拒绝非法生命周期跳转。

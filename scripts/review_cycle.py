@@ -50,6 +50,7 @@ def normalize_state(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("used_reviewer_ids", [])
     state.setdefault("check_repair_count", 0)
     state.setdefault("check_repairs", [])
+    state.setdefault("review_threads_evidence", None)
     state.setdefault("implementation_started_at", None)
     state.setdefault("legacy_in_progress", False)
     if not had_implementation_started_at or not had_legacy_in_progress:
@@ -216,6 +217,7 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
         "remote_fixes": [],
         "checks_passed": False,
         "checks_evidence": None,
+        "review_threads_evidence": None,
         "merged_at": None,
         "merge_sha": None,
         "issue_closed_verified_at": None,
@@ -465,6 +467,7 @@ def cmd_record_pr(args: argparse.Namespace) -> dict[str, Any]:
     state["closing_reference"] = closing_reference
     state["checks_passed"] = False
     state["checks_evidence"] = None
+    state["review_threads_evidence"] = None
     state["stage"] = "pr_draft"
     add_event(state, "pr_recorded", url=url, head_sha=head_sha, closing_reference=closing_reference)
     save_state(path, state)
@@ -566,6 +569,7 @@ def cmd_record_remote_fix(args: argparse.Namespace) -> dict[str, Any]:
     state["pr_head_sha"] = head_sha
     state["checks_passed"] = False
     state["checks_evidence"] = None
+    state["review_threads_evidence"] = None
     state["remote_fix_completed_at"] = now_utc()
     state["remote_fix_count"] = repair_number
     state["remote_fixes"].append({"number": repair_number, "head_sha": head_sha, "validation": validation, "at": state["remote_fix_completed_at"]})
@@ -597,6 +601,7 @@ def cmd_record_check_repair(args: argparse.Namespace) -> dict[str, Any]:
     state["pr_head_sha"] = head_sha
     state["checks_passed"] = False
     state["checks_evidence"] = None
+    state["review_threads_evidence"] = None
     state["check_repair_count"] = repair_number
     state["check_repairs"].append(
         {
@@ -637,6 +642,35 @@ def cmd_record_checks(args: argparse.Namespace) -> dict[str, Any]:
     return state
 
 
+def cmd_record_review_threads(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    if state["pr_url"] is None:
+        fail("record the PR before unresolved review threads")
+    head_sha = require_text(args.head_sha, "head-sha")
+    if head_sha != state["pr_head_sha"]:
+        fail("review threads must refer to the current PR HEAD SHA")
+    evidence = require_text(args.evidence, "evidence")
+    unresolved = args.unresolved_count
+    if unresolved < 0:
+        fail("unresolved-count must be zero or greater")
+    state["review_threads_evidence"] = {
+        "head_sha": head_sha,
+        "unresolved_count": unresolved,
+        "evidence": evidence,
+        "at": now_utc(),
+    }
+    add_event(
+        state,
+        "review_threads_recorded",
+        head_sha=head_sha,
+        unresolved_count=unresolved,
+        evidence=evidence,
+    )
+    save_state(path, state)
+    return state
+
+
 def cmd_mark_merged(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
@@ -644,6 +678,13 @@ def cmd_mark_merged(args: argparse.Namespace) -> dict[str, Any]:
         fail("completed remote assessment is required before merge")
     if not state["checks_passed"]:
         fail("current PR HEAD must have passing required checks")
+    review_threads = state.get("review_threads_evidence")
+    if (
+        not review_threads
+        or review_threads["head_sha"] != state["pr_head_sha"]
+        or review_threads["unresolved_count"] != 0
+    ):
+        fail("latest review-thread query must report zero unresolved threads for the current PR HEAD")
     merge_sha = require_text(args.merge_sha, "merge-sha")
     evidence = require_text(args.evidence, "evidence")
     state["merged_at"] = now_utc()
@@ -871,6 +912,13 @@ def build_parser() -> argparse.ArgumentParser:
     checks.add_argument("--result", choices=("pass", "fail"), required=True)
     checks.add_argument("--evidence", required=True)
     checks.set_defaults(handler=cmd_record_checks)
+
+    review_threads = commands.add_parser("record-review-threads", help="record unresolved review-thread count for current PR HEAD")
+    add_state_file(review_threads)
+    review_threads.add_argument("--head-sha", required=True)
+    review_threads.add_argument("--unresolved-count", type=int, required=True)
+    review_threads.add_argument("--evidence", required=True)
+    review_threads.set_defaults(handler=cmd_record_review_threads)
 
     merged = commands.add_parser("mark-merged", help="record a permitted merge")
     add_state_file(merged)

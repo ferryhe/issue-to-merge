@@ -202,6 +202,18 @@ class ReviewCycleTests(unittest.TestCase):
                 evidence="required checks passed",
             )
         )
+        with self.assertRaisesRegex(SystemExit, "zero unresolved threads"):
+            review_cycle.cmd_mark_merged(
+                args(self.state_file, merge_sha="def456", evidence="PR merged")
+            )
+        review_cycle.cmd_record_review_threads(
+            args(
+                self.state_file,
+                head_sha="abc123",
+                unresolved_count=0,
+                evidence="github query: zero unresolved threads",
+            )
+        )
         review_cycle.cmd_mark_merged(
             args(self.state_file, merge_sha="def456", evidence="PR merged")
         )
@@ -249,6 +261,7 @@ class ReviewCycleTests(unittest.TestCase):
             "used_reviewer_ids",
             "check_repair_count",
             "check_repairs",
+            "review_threads_evidence",
             "implementation_started_at",
             "legacy_in_progress",
         ):
@@ -264,6 +277,7 @@ class ReviewCycleTests(unittest.TestCase):
         self.assertEqual(loaded["used_reviewer_ids"], [])
         self.assertEqual(loaded["check_repair_count"], 0)
         self.assertEqual(loaded["check_repairs"], [])
+        self.assertIsNone(loaded["review_threads_evidence"])
         self.assertIsNone(loaded["implementation_started_at"])
         self.assertFalse(loaded["legacy_in_progress"])
 
@@ -819,6 +833,7 @@ class ReviewCycleTests(unittest.TestCase):
         self.assertEqual(state["pr_head_sha"], "def456")
         self.assertFalse(state["checks_passed"])
         self.assertIsNone(state["checks_evidence"])
+        self.assertIsNone(state["review_threads_evidence"])
         self.assertEqual(state["remote_feedback_started_at"], ready_at.isoformat())
         self.assertIsNone(state["remote_feedback_fetched_at"])
         self.assertEqual(state["stage"], "pr_ready")
@@ -1022,6 +1037,29 @@ class SkillMetadataTests(unittest.TestCase):
         self.assertIn("match the user's language", prompt)
         self.assertIn("Remote comments pass through the same finding policy", readme)
         self.assertIn("远程 comments 必须通过与本地审核相同的 finding 标准", readme_zh)
+
+    def test_unresolved_review_threads_are_a_pre_merge_gate(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        prompt = (ROOT / "references" / "issue-manager-prompt.md").read_text(
+            encoding="utf-8"
+        )
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+
+        remote = skill.split("### 5. Handle one remote-feedback window", 1)[1].split(
+            "### 6. Merge and clean up", 1
+        )[0]
+        merge = skill.split("### 6. Merge and clean up", 1)[1].split(
+            "## Model configuration", 1
+        )[0]
+        manager_template = prompt.split("```text", 1)[1].split("```", 1)[0]
+
+        self.assertIn("resolve the thread through GitHub", remote)
+        self.assertIn("including threads classified as invalid or made outdated", remote)
+        self.assertIn("zero unresolved review threads", merge)
+        self.assertIn("Re-query the PR immediately before merge", manager_template)
+        self.assertIn("zero unresolved threads is a merge gate", readme)
+        self.assertIn("未解决 thread 必须为零", readme_zh)
 
     def test_waste_prevention_guards_reach_their_owning_roles(self) -> None:
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")

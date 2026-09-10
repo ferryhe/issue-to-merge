@@ -20,8 +20,9 @@ Turn named GitHub Issues into reviewed, merged PRs with an evidence-backed, boun
 - Draft PR before Ready for review, with an exact `Closes #<issue>` reference.
 - One ten-minute remote-feedback window covering checks, reviews, threads, comments, and Copilot feedback.
 - Remote comments pass through the same finding policy as local reviews before any change is accepted.
+- Every inline review thread receives a final disposition, is resolved on GitHub, and is rechecked before merge; zero unresolved threads is a merge gate.
 - User-facing updates match the user's language and use short, plain wording; detailed evidence remains in internal reports.
-- No branch-protection bypass and no merge while a valid blocker remains.
+- No branch-protection bypass and no merge while a valid blocker or unresolved review thread remains.
 - Verified Issue closure and ordered branch/worktree cleanup.
 - Verified closure of the completed Issue task before the next Issue begins.
 - A deterministic JSON state machine in `scripts/review_cycle.py` that rejects invalid lifecycle transitions.

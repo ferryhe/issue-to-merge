@@ -109,6 +109,7 @@ A review round means one completed reviewer report. Worker fixes, test runs, sta
 - Whenever a required check fails after PR publication, attribute the failure before attempting a repair. Compare its logs and failing scope with the Issue diff; when attribution remains uncertain, reproduce the same check on a clean checkout of the supplied default-branch baseline. Re-run a failed check at most once, and only when the evidence indicates a transient infrastructure failure or genuine flake. Send only an Issue-caused, safely repairable failure to the same Issue worker; record the repair with `record-check-repair` using the same recorded worker identity/profile/provider/model, preserve the existing Ready/feedback timestamps, record baseline or infrastructure evidence, and escalate any failure that still blocks the merge.
 - Give the **same Issue worker** the PR HEAD SHA, fetched feedback, the same numbered acceptance criteria, non-goals, exact user override or `none`, and default review policy used by local reviewers. Have it evaluate every fetched review, thread, Issue comment, and Copilot comment as `valid`, `invalid`, or `ambiguous`, with reasons. A comment is `valid` only when it passes the same realistic-reproduction, allowed-category, acceptance-mapping, and smallest-correction tests as a local finding. Policy-excluded or unmapped comments are `invalid`; use `ambiguous` only for a plausible blocker that lacks enough evidence to decide safely. The worker may implement only confirmed-safe `valid` changes, must not introduce a security framework or speculative abstraction, and must report modifications and targeted test results.
 - The manager reads that report, independently rechecks each disposition against the shared policy, and verifies the diff. Ambiguous or unsafe blocking feedback must be recorded as blocked and reported to the user in plain language instead of guessed. After an explicit user/controller decision, record the audited resolution as either `merge_ready` or `remote_fix`; do not refetch comments.
+- After every fetched inline review thread has a final disposition and every accepted fix is pushed, reply briefly with the disposition when the thread does not already make it clear, resolve the thread through GitHub, and then query the PR again. **Zero unresolved review threads is a merge requirement**, including threads classified as invalid or made outdated by a fix; document those dispositions before resolving them. Issue comments and top-level review bodies are not resolvable threads and must remain visible.
 - The Issue worker may edit assigned files and run tests only; it must not commit, push, mutate the PR, merge, or clean branches/worktrees. The manager inspects its changes and owns all Git/GitHub mutations.
 - If the Issue worker makes a material remote-feedback change, run the relevant tests, record the validation evidence, commit, and push. **Do not reset the timestamp, wait another 10 minutes, spawn another reviewer, or fetch remote feedback again.** Merge as soon as repository-required checks and branch protections allow.
 - If that push fails a required check, apply the attribution rule above. When it is confirmed Issue-caused and safely repairable, send the failure evidence back to the same worker, validate the repair, and let the manager record and push another HEAD. This repair loop is driven only by required-check failures; it never opens another feedback window.
@@ -119,7 +120,7 @@ This single-window rule is an explicit exception to workflows that normally rest
 
 ### 6. Merge and clean up
 
-- Merge only when required checks pass, no known valid blocking issue remains, and GitHub permits the merge. Do not bypass branch protection.
+- Merge only when required checks pass, no known valid blocking issue remains, a fresh GitHub query reports zero unresolved review threads, and GitHub permits the merge. Do not bypass branch protection.
 - Ensure the PR body closes the Issue, merge, and independently verify that GitHub reports the Issue closed.
 - Clean up in this order: verify/delete the remote branch, remove the worktree, delete the local branch, then update the local default branch from its remote tracking branch and verify the merged commit is present.
 - Before returning the completion report, verify that the Issue worker and every local reviewer have no active turn; release completed reviewers when supported. The controller closes the completed Issue task after independently verifying this report.
@@ -163,6 +164,7 @@ Do not treat an Issue as complete until:
 - its body contained `Closes #<issue-number>`;
 - the state script enforced the single 10-minute remote-feedback window and the same Issue worker evaluated Copilot and other remote comments under manager verification;
 - any remote fix passed targeted validation, with no second wait or refetch;
+- every fetched inline review thread has a documented final disposition, is resolved on GitHub, and a fresh pre-merge query reports zero unresolved review threads;
 - every failed required check was attributed before repair, and a retry without code changes occurred at most once with evidence of a genuine flake or transient infrastructure failure;
 - repository-required checks passed and no known valid blocker remained;
 - the merge closed the Issue and that closed state was independently verified;
@@ -200,7 +202,7 @@ Manager, branch, commit, review-count, check, and raw evidence details remain in
 - Accepting a local finding or remote comment that is speculative, not realistically reproducible, outside the allowed categories, or not mapped to an Issue acceptance criterion.
 - Introducing a security framework or speculative abstraction in an implementation or fix.
 - Showing users raw lifecycle state or agent jargon instead of a short update in their language.
-- Merging while required checks fail, a valid blocker is known, or branch protection would need bypassing.
+- Merging while required checks fail, a valid blocker or unresolved review thread is known, or branch protection would need bypassing.
 - Merging a PR that does not close the Issue, or advancing before GitHub confirms the Issue is closed.
 - Starting the next Issue before merge, branch/worktree cleanup, and closure of the current Issue task are verified.
 - Assuming every Issue has a code change. Some acceptance criteria may already be satisfied on the default branch, making the gap verification rather than implementation. Audit the latest remote default branch before creating the worktree and classify the Issue as verification-only when appropriate.
