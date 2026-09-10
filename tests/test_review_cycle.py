@@ -202,6 +202,18 @@ class ReviewCycleTests(unittest.TestCase):
                 evidence="required checks passed",
             )
         )
+        with self.assertRaisesRegex(SystemExit, "zero unresolved threads"):
+            review_cycle.cmd_mark_merged(
+                args(self.state_file, merge_sha="def456", evidence="PR merged")
+            )
+        review_cycle.cmd_record_review_threads(
+            args(
+                self.state_file,
+                head_sha="abc123",
+                unresolved_count=0,
+                evidence="github query: zero unresolved threads",
+            )
+        )
         review_cycle.cmd_mark_merged(
             args(self.state_file, merge_sha="def456", evidence="PR merged")
         )
@@ -249,6 +261,7 @@ class ReviewCycleTests(unittest.TestCase):
             "used_reviewer_ids",
             "check_repair_count",
             "check_repairs",
+            "review_threads_evidence",
             "implementation_started_at",
             "legacy_in_progress",
         ):
@@ -264,6 +277,7 @@ class ReviewCycleTests(unittest.TestCase):
         self.assertEqual(loaded["used_reviewer_ids"], [])
         self.assertEqual(loaded["check_repair_count"], 0)
         self.assertEqual(loaded["check_repairs"], [])
+        self.assertIsNone(loaded["review_threads_evidence"])
         self.assertIsNone(loaded["implementation_started_at"])
         self.assertFalse(loaded["legacy_in_progress"])
 
@@ -819,6 +833,7 @@ class ReviewCycleTests(unittest.TestCase):
         self.assertEqual(state["pr_head_sha"], "def456")
         self.assertFalse(state["checks_passed"])
         self.assertIsNone(state["checks_evidence"])
+        self.assertIsNone(state["review_threads_evidence"])
         self.assertEqual(state["remote_feedback_started_at"], ready_at.isoformat())
         self.assertIsNone(state["remote_feedback_fetched_at"])
         self.assertEqual(state["stage"], "pr_ready")
