@@ -1023,6 +1023,29 @@ class SkillMetadataTests(unittest.TestCase):
         self.assertIn("Remote comments pass through the same finding policy", readme)
         self.assertIn("远程 comments 必须通过与本地审核相同的 finding 标准", readme_zh)
 
+    def test_unresolved_review_threads_are_a_pre_merge_gate(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        prompt = (ROOT / "references" / "issue-manager-prompt.md").read_text(
+            encoding="utf-8"
+        )
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+
+        remote = skill.split("### 5. Handle one remote-feedback window", 1)[1].split(
+            "### 6. Merge and clean up", 1
+        )[0]
+        merge = skill.split("### 6. Merge and clean up", 1)[1].split(
+            "## Model configuration", 1
+        )[0]
+        manager_template = prompt.split("```text", 1)[1].split("```", 1)[0]
+
+        self.assertIn("resolve the thread through GitHub", remote)
+        self.assertIn("including threads classified as invalid or made outdated", remote)
+        self.assertIn("zero unresolved review threads", merge)
+        self.assertIn("Re-query the PR immediately before merge", manager_template)
+        self.assertIn("zero unresolved threads is a merge gate", readme)
+        self.assertIn("未解决 thread 必须为零", readme_zh)
+
     def test_waste_prevention_guards_reach_their_owning_roles(self) -> None:
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         prompt = (ROOT / "references" / "issue-manager-prompt.md").read_text(
