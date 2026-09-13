@@ -40,12 +40,27 @@ Keep detailed evidence in internal reports and the state record. For every user-
 
 The root controller owns only the ordered queue and cross-Issue coordination:
 
-Read [references/context-management.md](references/context-management.md) before dispatch. Keep source files, diffs, test logs, and full agent reports in the Issue manager context and external evidence files. The controller receives compact structured results targeting at most 2,000 characters and independently verifies selected completion facts. On Hermes, read [references/hermes-runtime.md](references/hermes-runtime.md) first: an isolated orchestrator child supplies the Issue task boundary used below. The main chat must never double as the Issue manager.
+Before any Issue branch, task, or state file is created, follow
+[references/runtime-selection.md](references/runtime-selection.md). On first use,
+show current settings, the concrete tiered Codex preset, and custom configuration;
+for current settings, inspect and show the concrete current role routes, host limit,
+and applicable Fast state before saving. Save only the customer's choice outside
+the skill and repository. The saved current choice retains null inheritance. A
+returning run reuses that strategy without asking again, then reinspects and binds
+the current routes during each Issue preflight. Create a ready snapshot containing
+the concrete dispatch routes and use it for child creation. Do not infer consent
+from runtime detection or edit global runtime configuration. Use
+[references/codex-runtime.md](references/codex-runtime.md) for Codex, or
+[references/hermes-runtime.md](references/hermes-runtime.md) and
+[references/hermes-profiles-kanban.md](references/hermes-profiles-kanban.md) for
+Hermes.
+
+Read [references/context-management.md](references/context-management.md) before dispatch. Keep source files, diffs, test logs, and full agent reports in the Issue manager context and external evidence files. The controller receives compact structured results targeting at most 2,000 characters and independently verifies selected completion facts. On Hermes, an isolated orchestrator child supplies the Issue task boundary used below. The main chat must never double as the Issue manager.
 
 1. Resolve the exact repository, Issue numbers, order, dependencies, default branch, and current default-branch status. Before creating a worktree, search open and closed PRs plus remote branches for the Issue number, Issue URL, and distinctive title keywords, then inspect every plausible match. If equivalent work is active or a closed unmerged PR already contains the needed implementation, do not create a duplicate; report the evidence and ask the user whether to continue or reuse that work. If it is already merged, verify the Issue state and treat the queue item as already satisfied instead of opening another PR. Record why any other plausible match is not equivalent before proceeding.
 2. Work on one Issue at a time. Do not start Issue N+1 until Issue N is merged, its branches and worktree are cleaned, its top-level task is closed, and the local default branch is updated from its remote tracking branch.
 3. For every Issue, create a **fresh top-level Issue task** (or a fresh isolated orchestrator manager on Hermes) backed by a fresh isolated worktree and project-approved Issue branch (for example, `agent/issue-123`) from the latest clean remote default branch. The task's root agent is the Issue manager; do not create an issue-manager subagent inside it. If the runtime creates the worktree as part of task creation, use that mechanism; otherwise prepare the worktree before starting the task. Never reuse an Issue task for another Issue.
-4. Use [references/issue-manager-prompt.md](references/issue-manager-prompt.md) as the Issue task's initial prompt, filled with the exact repository, Issue, branch, worktree, state-file, duplicate-work search evidence, required checks, authorization, and the user's exact review-policy override or `none`.
+4. Use [references/issue-manager-prompt.md](references/issue-manager-prompt.md) as the Issue task's initial prompt, filled with the exact repository, Issue, branch, worktree, state-file, frozen runtime snapshot, duplicate-work search evidence, required checks, authorization, and the user's exact review-policy override or `none`.
 5. Wait for the Issue task's evidence-backed completion report. If it needs a user or controller decision, continue the same task after the decision instead of replacing it. Independently verify the merge and cleanup, then close the completed Issue task and verify that its child agents and runtime resources were released. Record that proof with `mark-task-closed` before starting the next Issue. If task closure or cleanup cannot be verified, do not advance the queue.
 6. Report progress at least every 15 minutes and immediately report permissions failures, merge conflicts, failed required checks, ambiguous blocking feedback, or other decisions needing the user. Follow the user-facing communication rules above.
 7. When reminder/automation support is available, declare the delivery scope and start one 15-minute progress heartbeat before the first Issue. Persist its identifier and active/stopped state in the project status mechanism, then stop it and verify removal when the queue finishes or the user stops the program.
@@ -56,7 +71,7 @@ Keep each Issue task's state file outside the Git checkout, or in a project-appr
 
 The root agent of the Issue task is its manager and owns one Issue from verification of the assigned branch/worktree through merge and cleanup. It coordinates agents and reads every report; it does not create another manager agent or replace delegated implementation or review with its own unsupported judgment.
 
-The standard Issue task contains this root manager, exactly one persistent implementation worker, and one fresh reviewer for each local-review round. Do not add another agent role. When a reviewer's final report has been consumed, release it if the runtime supports that operation; otherwise verify that it has no active turn and rely on closing the Issue task as the final resource-reclamation boundary. Keep the implementation worker available for the entire Issue.
+The standard Issue task contains this root manager, exactly one persistent implementation worker, and one fresh reviewer for each local-review round. A selected strict policy may add one separate read-only Judge only for a declared policy trigger. Do not add other roles. When a reviewer's final report has been consumed, release it if the runtime supports that operation; otherwise verify that it has no active turn and rely on closing the Issue task as the final resource-reclamation boundary. Keep the implementation worker available for the entire Issue.
 
 When adapting this workflow onto Hermes Profiles/Kanban, keep the portable roles (`manager`, `worker`, `reviewer`, `remote_worker`) distinct from Hermes profile names and follow [references/hermes-profiles-kanban.md](references/hermes-profiles-kanban.md). On Hermes, `remote_worker` is still the same implementation worker lifecycle, not a fourth agent.
 
@@ -71,7 +86,13 @@ When adapting this workflow onto Hermes Profiles/Kanban, keep the portable roles
 
 ### 2. Dispatch implementation
 
-- Spawn one fresh worker subagent for this Issue. Reuse the same worker for the entire Issue so it retains implementation context: initial implementation, all local-review fixes, remote-feedback classification and fixes, and every Issue-caused required-check repair. Before implementation begins, record that worker's identity/profile/provider/model in the state script, then run `start-implementation` immediately before dispatch. The state machine audits declared lifecycle order; it cannot observe arbitrary out-of-band file edits. Do not spawn a replacement or separate remote-feedback worker.
+- When the frozen policy requires assessment, record affected modules,
+  cross-module coupling, algorithm/state/migration difficulty, unresolved
+  decisions, the selected tier, and the validation plan with
+  `record-assessment`. A tier suggestion is not assessment evidence. Resolve
+  declared architecture/security uncertainty through the configured separate
+  Judge before worker selection.
+- Spawn one fresh worker subagent for this Issue. Reuse the same worker for the entire Issue so it retains implementation context: initial implementation, all local-review fixes, remote-feedback classification and fixes, and every Issue-caused required-check repair. Before implementation begins, record that worker's identity/profile/provider/model/reasoning in the state script, then run `start-implementation` immediately before dispatch. The state machine audits declared lifecycle order; it cannot observe arbitrary out-of-band file edits. Do not spawn a replacement or separate remote-feedback worker.
 - The worker prompt must require explicit assumptions, the smallest correct change, surgical file ownership, TDD for behavior changes, focused plus required regression tests, and evidence-backed success criteria. Every implementation and later fix must trace directly to at least one numbered acceptance criterion and must not introduce a security framework or speculative abstraction. State that other agents may share the repository and give the exact worktree and branch.
 - For a bug fix, require the worker to search for sibling call sites or implementations with the same defect shape. The smallest correct change is the smallest complete fix for the mapped acceptance criterion: repair every affected in-scope sibling and list each inspected exclusion with evidence that it is unaffected or outside that criterion. Do not broaden the change to merely similar code.
 - For a bug fix, require red/green regression evidence: the new regression test must fail for the expected reason on the pre-fix behavior or with the fix temporarily removed, then pass with the fix applied. Feature-only work does not require this pre-fix failure proof.
@@ -90,7 +111,7 @@ Use `scripts/review_cycle.py` for every transition. The script is authoritative 
    - If there are valid findings, record `finish-review --outcome changes`, then send the existing worker a targeted modification prompt containing accepted findings, rejected findings with reasons, exact acceptance criteria, and required tests.
    - Before `finish-review`, the manager may ask the same reviewer for evidence or clarification within that round. After `finish-review` records either outcome, release that one-shot reviewer when supported. Never reuse a local reviewer in another round.
 4. Read the worker's modification report, inspect the diff, rerun required validation, and record `record-fix --worker-id <WORKER_ID> --worker-profile <WORKER_PROFILE> --worker-provider <WORKER_PROVIDER> --worker-model <WORKER_MODEL>` with both the report reference and validation evidence.
-5. If fewer than fifteen reviews have run, start the next round with another fresh reviewer. If the fifteenth review found issues, complete this one final worker fix and then proceed without a sixteenth review. The final fix is deliberately unreviewed but must still pass required tests.
+5. If fewer than fifteen reviews have run, start the next round with another fresh reviewer. Under a selected strict policy, every completed `changes` review from the second onward requires a separate configured Judge decision before the next fix, and PR preparation always requires a configured-reviewer PASS. If the final allowed review finds issues, stop blocked; do not apply an unreviewed bypass or add a review. Compatibility states without a strict snapshot retain the legacy final tested-fix behavior.
 
 A review round means one completed reviewer report. Worker fixes, test runs, status reads, PR comments, and Copilot handling do not increment the local count. Never reset the count within an Issue.
 
@@ -98,7 +119,7 @@ A review round means one completed reviewer report. Worker fixes, test runs, sta
 
 - Run final focused and required regression validation, inspect the complete diff, and commit intentionally.
 - Push the assigned branch and create a Draft PR whose body contains the exact closing keyword `Closes #<issue-number>`.
-- Record the PR URL, branch, commit SHA, checks, local review count, and whether round fifteen required an unreviewed final fix.
+- Record the PR URL, branch, commit SHA, checks, local review count, and whether a legacy compatibility state used its round-fifteen unreviewed final fix.
 - Change the PR to **Ready for review** only after its description, checks, and evidence are complete.
 - Use the state script to mark Ready for review; it records `remote_feedback_started_at` exactly once and cannot be reset by a later push.
 
@@ -128,16 +149,22 @@ This single-window rule is an explicit exception to workflows that normally rest
 
 ## Model configuration
 
-Every role's model is configured in one place: [`config/models.json`](config/models.json). The file maps portable role names to model names:
+The reusable skill ships opt-in examples under `config/runtimes/`. Customer
+selection lives outside the skill and target repository. Resolution precedence is
+explicit invocation config/override, then the saved full selection, then its
+originally selected preset. Explicit JSON `null` means runtime inheritance.
+Malformed saved data and unavailable actual routes stop before dispatch.
 
-- `manager` — the Issue manager;
-- `worker` — the implementation worker (coder);
-- `reviewer` — each fresh local reviewer;
-- `remote_worker` — the worker during the remote-feedback phase.
+`config/models.json` remains a legacy input. Import it only through the explicit
+migration command in the runtime selection contract; never replace its custom
+strings with preset values. A legacy `remote_worker` string must match `worker`
+because remote work uses the same persistent implementation worker. In that
+legacy file, null roles fall back to the agent's own current model.
 
-A value of `null` or a missing key makes that role fall back to the agent's own current model. A string value fixes that role to the named model. Cross-model review is optional: assigning different models to the worker and reviewer is allowed but never required. With no configuration, every role uses the agent's own current model, exactly as before.
-
-On Hermes Profiles/Kanban, choose the Hermes profile for the role first. That selected profile is authoritative for provider/model/tool state. A `null` role-model entry leaves the selected profile unchanged. If a non-null entry would require provider guessing or conflicts with the selected profile, fail closed instead of approximating. See [references/hermes-profiles-kanban.md](references/hermes-profiles-kanban.md).
+New strict states record the frozen runtime/policy snapshot and actual manager,
+worker, reviewer and Judge routes. Old states and compatibility initialization
+without a snapshot keep their existing lifecycle and do not gain fabricated
+assessment, Judge or PASS evidence.
 
 ## Quality Gates
 
@@ -159,7 +186,7 @@ Do not treat an Issue as complete until:
 - numbered acceptance criteria were used, every accepted local or remote finding passed the default review policy, and every fix mapped directly to an acceptance criterion;
 - no implementation or fix introduced a security framework or speculative abstraction;
 - every local review round used a fresh non-editing reviewer and the script count never exceeded fifteen;
-- a fifteenth-round finding, if any, received exactly one final tested worker fix with no sixteenth review;
+- a selected strict policy received a configured-reviewer PASS before PR preparation, while any legacy fifteenth-round final-fix behavior remained confined to compatibility states;
 - the PR moved from Draft to Ready for review;
 - its body contained `Closes #<issue-number>`;
 - the state script enforced the single 10-minute remote-feedback window and the same Issue worker evaluated Copilot and other remote comments under manager verification;

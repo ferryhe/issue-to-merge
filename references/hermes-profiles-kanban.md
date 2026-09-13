@@ -85,13 +85,17 @@ it.
 The selected profile is authoritative. Hermes profiles own config/provider/model, so
 the profile chosen for a role decides the base provider/model/tool/skill surface.
 
-Apply precedence in this order:
+For a newly selected run, apply precedence in this order and freeze the result:
 
 1. Select the Hermes profile for the logical role.
-2. Read `config/models.json` for an optional role-model override.
-3. If the role config is `null` or missing, leave the selected profile unchanged.
-4. If the role config is a string, apply it only when the adapter can bind it to
+2. Import `config/models.json` explicitly when the customer chooses migration.
+3. If the imported role config is `null` or missing, leave the selected profile unchanged.
+4. If the imported role config is a string, apply it only when the adapter can bind it to
    the selected profile without provider ambiguity or incompatibility.
+
+After selection, use the frozen effective config in Issue state rather than
+rereading either source during the Issue. Existing legacy states keep their prior
+profile-first behavior.
 
 Safe examples:
 

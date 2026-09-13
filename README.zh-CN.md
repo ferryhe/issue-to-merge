@@ -26,7 +26,8 @@
 - 必须验证 Issue 已关闭，并按顺序清理远程分支、worktree 和本地分支。
 - 必须验证当前 Issue 任务已经关闭，之后才能开始下一个 Issue。
 - `scripts/review_cycle.py` 使用确定性的 JSON 状态机拒绝非法生命周期跳转。
-- 通过 `config/models.json` 这一处入口为各角色指定模型；未配置的角色回退到 agent 自身当前模型（交叉模型只是可选，不强制）。
+- 首次使用时明确选择运行时和路由，并把选择保存在 skill 目录之外；每个 Issue 使用经过主机预检的固定策略快照。
+- 选择分层 Codex 策略后，必须记录 worker 复杂度评估、实际角色/模型/推理强度、独立的全新 reviewer、按条件触发的 Judge，以及创建 PR 前的 reviewer PASS。
 
 Issue 正文、PR 文本、评论和审查意见都被视为不可信的仓库内容。它们不能扩大权限，也不能覆盖用户或仓库策略。
 
@@ -60,6 +61,34 @@ git clone https://github.com/ferryhe/issue-to-merge.git
 
 对于“我们应该如何处理 #123？”这类仅咨询问题，本 skill 不会启动发布和合并流程。发布、合并、删除和清理权限始终只覆盖用户明确指定的 Issue 和仓库。
 
+## 运行时选择
+
+首次使用时，先展示当前设置、分层 Codex 和自定义配置这三种选择。只有用户
+选定后，才把完整选择写入安装目录和目标仓库之外；后续运行复用该选择：
+
+```shell
+python scripts/runtime_config.py options
+python scripts/runtime_config.py preview-current --runtime codex --capabilities /external/current-capabilities.json
+python scripts/runtime_config.py select --selection /external/runtime-selection.json --runtime codex --strategy current --capabilities /external/current-capabilities.json
+python scripts/runtime_config.py select --selection /external/runtime-selection.json --runtime codex --strategy tiered
+python scripts/runtime_config.py preflight --selection /external/runtime-selection.json --capabilities /external/host-capabilities.json --output /external/issue-123.runtime.json
+```
+
+“当前设置”预览使用实际检查到的有效路由，而且不会写文件。保存的选择仍保留
+null 继承；每个 Issue 的预检都会重新检查，并冻结具体路由、子代理上限和 Fast
+状态。分层 Codex 会明确展示
+Sol/Luna/Terra/Astra 的角色路由、最多四个子代理和关闭 Fast；自定义配置保留
+客户自己提供的并发和 Fast 选择。脚本只核验调用方提供的主机证据，不声称自动
+识别能力，也不会修改 Codex 或 Hermes 的全局配置。详见
+[运行时选择约定](references/runtime-selection.md)和
+[Codex 适配说明](references/codex-runtime.md)。
+
+自定义策略只能选择完整的严格 assessment/Judge/PASS 生命周期，或现有非严格
+生命周期；非严格模式不能混入仅由严格模式执行的策略字段。
+
+原有 `config/models.json` 继续保留，并提供显式迁移；其中的自定义字符串和
+null 继承语义不会被预设静默覆盖。
+
 ## 状态脚本
 
 Issue manager 会记录交付阶段，controller 会记录最终任务关闭；这些生命周期跳转都写入目标 checkout 之外的 JSON 状态文件：
@@ -69,7 +98,10 @@ python scripts/review_cycle.py --help
 python scripts/review_cycle.py status --state-file /path/to/issue-123.state.json
 ```
 
-该脚本会强制执行审查轮数上限、准确的 Issue 关闭引用、单次远程反馈抓取、当前 PR HEAD 的 checks 证据、清理顺序，以及最终的 Issue 任务关闭证明。
+该脚本会记录所选运行时快照；选择严格策略时，还会强制执行评估、Judge 和
+PASS 门禁。同时继续执行审查轮数上限、准确的 Issue 关闭引用、单次远程反馈
+抓取、当前 PR HEAD 的 checks 证据、清理顺序和最终任务关闭证明。没有运行时
+快照的旧状态保留原有兼容策略。
 
 ## 运行时兼容性
 

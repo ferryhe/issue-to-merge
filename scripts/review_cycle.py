@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
 import os
 import sys
@@ -11,6 +13,17 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NoReturn
+
+try:
+    import runtime_config
+except ModuleNotFoundError:
+    _runtime_spec = importlib.util.spec_from_file_location(
+        "runtime_config", Path(__file__).with_name("runtime_config.py")
+    )
+    if _runtime_spec is None or _runtime_spec.loader is None:
+        raise
+    runtime_config = importlib.util.module_from_spec(_runtime_spec)
+    _runtime_spec.loader.exec_module(runtime_config)
 
 
 MAX_REVIEWS = 15
@@ -44,6 +57,7 @@ def normalize_state(state: dict[str, Any]) -> dict[str, Any]:
     if isinstance(worker, dict):
         worker.setdefault("provider", None)
         worker.setdefault("model", None)
+        worker.setdefault("reasoning", None)
     state.setdefault("worker", None)
     state.setdefault("worker_continuity", SUPPORTED_WORKER_CONTINUITY)
     state.setdefault("active_reviewer", None)
@@ -53,6 +67,14 @@ def normalize_state(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("review_threads_evidence", None)
     state.setdefault("implementation_started_at", None)
     state.setdefault("legacy_in_progress", False)
+    state.setdefault("runtime_snapshot", None)
+    state.setdefault("runtime_snapshot_hash", None)
+    state.setdefault("assessment", None)
+    state.setdefault("failed_review_cycles", 0)
+    state.setdefault("pending_adjudication", None)
+    state.setdefault("adjudications", [])
+    state.setdefault("used_judge_ids", [])
+    state.setdefault("last_local_pass", None)
     if not had_implementation_started_at or not had_legacy_in_progress:
         if is_legacy_in_progress_state(state):
             state["legacy_in_progress"] = True
@@ -95,15 +117,33 @@ def load_state(path: Path) -> dict[str, Any]:
     if not isinstance(max_reviews, int) or max_reviews < 1 or max_reviews > MAX_REVIEWS:
         fail(f"state max_reviews must be an integer from 1 to {MAX_REVIEWS}")
     state = normalize_state(state)
+    snapshot = state.get("runtime_snapshot")
+    if snapshot is not None:
+        try:
+            runtime_config.validate_snapshot(snapshot)
+        except runtime_config.ConfigError as exc:
+            fail(f"invalid frozen runtime snapshot in state: {exc}")
+        expected_hash = state.get("runtime_snapshot_hash")
+        if expected_hash != snapshot_hash(snapshot):
+            fail("frozen runtime snapshot in state was modified")
     if state["worker_continuity"] != SUPPORTED_WORKER_CONTINUITY:
         fail("unsupported worker continuity contract in state file")
     if not isinstance(state["used_reviewer_ids"], list):
         fail("state used_reviewer_ids must be a list")
+    if not isinstance(state["used_judge_ids"], list):
+        fail("state used_judge_ids must be a list")
     return state
 
 
 def review_limit(state: dict[str, Any]) -> int:
     return int(state.get("max_reviews", MAX_REVIEWS))
+
+
+def snapshot_hash(snapshot: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
@@ -178,7 +218,75 @@ def require_worker_match(state: dict[str, Any], args: argparse.Namespace) -> dic
     worker_model = require_text(getattr(args, "worker_model", None), "worker-model")
     if worker["provider"] != worker_provider or worker["model"] != worker_model:
         fail("worker provider/model does not match the recorded implementation worker")
+    worker_reasoning = getattr(args, "worker_reasoning", None)
+    if is_strict_state(state):
+        worker_reasoning = require_text(worker_reasoning, "worker-reasoning")
+    if worker.get("reasoning") != worker_reasoning:
+        fail("worker reasoning does not match the recorded implementation worker")
     return worker
+
+
+def is_strict_state(state: dict[str, Any]) -> bool:
+    snapshot = state.get("runtime_snapshot")
+    return bool(
+        isinstance(snapshot, dict)
+        and snapshot.get("effective_config", {}).get("policy", {}).get("strict_lifecycle")
+    )
+
+
+def strict_config(state: dict[str, Any]) -> dict[str, Any]:
+    if not is_strict_state(state):
+        fail("this transition requires a selected strict runtime policy")
+    return state["runtime_snapshot"]["effective_config"]
+
+
+def require_no_pending_adjudication(state: dict[str, Any], *, action: str) -> None:
+    pending = state.get("pending_adjudication")
+    if pending:
+        fail(
+            f"resolve pending adjudication {pending['evidence_key']!r} before {action}"
+        )
+
+
+def load_runtime_snapshot(path_value: str | None) -> dict[str, Any] | None:
+    if path_value is None:
+        return None
+    path = Path(path_value).resolve()
+    try:
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read runtime snapshot {path}: {exc}")
+    if not isinstance(snapshot, dict):
+        fail("runtime snapshot root must be an object")
+    try:
+        runtime_config.validate_snapshot(snapshot)
+    except runtime_config.ConfigError as exc:
+        fail(f"invalid runtime snapshot: {exc}")
+    return snapshot
+
+
+def require_route(
+    actual_profile: str,
+    actual_model: str,
+    actual_reasoning: str,
+    expected: dict[str, Any],
+    role_name: str,
+) -> None:
+    if actual_profile != expected.get("role"):
+        fail(f"{role_name} profile/role must be {expected.get('role')!r}")
+    if actual_model != expected.get("model") or actual_reasoning != expected.get("reasoning"):
+        fail(
+            f"{role_name} route must be "
+            f"{expected.get('model')}/{expected.get('reasoning')}"
+        )
+
+
+def add_worker_identity_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--worker-id", required=True)
+    parser.add_argument("--worker-profile", required=True)
+    parser.add_argument("--worker-provider", required=True)
+    parser.add_argument("--worker-model", required=True)
+    parser.add_argument("--worker-reasoning")
 
 
 def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
@@ -188,6 +296,21 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
     issue = require_text(args.issue, "issue")
     branch = require_text(args.branch, "branch")
     manager_id = require_text(args.manager_id, "manager-id")
+    runtime_snapshot = load_runtime_snapshot(getattr(args, "runtime_snapshot", None))
+    if runtime_snapshot and runtime_snapshot["effective_config"]["policy"]["strict_lifecycle"]:
+        expected_manager = runtime_snapshot["effective_config"]["roles"]["manager"]
+        manager_profile = require_text(getattr(args, "manager_profile", None), "manager-profile")
+        manager_model = require_text(getattr(args, "manager_model", None), "manager-model")
+        manager_reasoning = require_text(
+            getattr(args, "manager_reasoning", None), "manager-reasoning"
+        )
+        require_route(
+            manager_profile,
+            manager_model,
+            manager_reasoning,
+            expected_manager,
+            "manager",
+        )
     created = now_utc()
     state: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -196,14 +319,18 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
         "manager_id": manager_id,
         "created_at": created,
         "updated_at": created,
-        "max_reviews": MAX_REVIEWS,
+        "max_reviews": (
+            runtime_snapshot["effective_config"]["policy"]["review_limit"]
+            if runtime_snapshot
+            else MAX_REVIEWS
+        ),
         "review_count": 0,
         "active_review": False,
         "active_review_number": None,
         "needs_fix": False,
         "local_review_closed": False,
         "final_unreviewed_fix": False,
-        "stage": "worker_selection",
+        "stage": "assessment" if runtime_snapshot and runtime_snapshot["effective_config"]["policy"]["assessment_required"] else "worker_selection",
         "pr_url": None,
         "pr_head_sha": None,
         "closing_reference": None,
@@ -237,8 +364,189 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
         "check_repairs": [],
         "implementation_started_at": None,
         "legacy_in_progress": False,
+        "runtime_snapshot": runtime_snapshot,
+        "runtime_snapshot_hash": snapshot_hash(runtime_snapshot) if runtime_snapshot else None,
+        "assessment": None,
+        "failed_review_cycles": 0,
+        "pending_adjudication": None,
+        "adjudications": [],
+        "used_judge_ids": [],
+        "last_local_pass": None,
     }
-    add_event(state, "initialized")
+    add_event(
+        state,
+        "initialized",
+        runtime=runtime_snapshot["runtime"] if runtime_snapshot else None,
+        policy_version=runtime_snapshot["policy_version"] if runtime_snapshot else None,
+    )
+    save_state(path, state)
+    return state
+
+
+def cmd_record_assessment(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    config = strict_config(state)
+    if state["assessment"] is not None:
+        fail("implementation assessment is already recorded")
+    if state["stage"] != "assessment" or state["worker"] is not None:
+        fail("assessment must be recorded before worker selection")
+    tier = require_text(args.tier, "tier")
+    tiers = config["roles"]["worker"]["tiers"]
+    if tier not in tiers:
+        fail(f"assessment tier is unavailable in selected runtime: {tier}")
+    assessment = {
+        "affected_modules": require_text(args.affected_modules, "affected-modules"),
+        "coupling_and_difficulty": require_text(
+            args.coupling_and_difficulty, "coupling-and-difficulty"
+        ),
+        "unresolved_decisions": require_text(
+            args.unresolved_decisions, "unresolved-decisions"
+        ),
+        "tier": tier,
+        "validation_plan": require_text(args.validation_plan, "validation-plan"),
+        "recorded_at": now_utc(),
+    }
+    state["assessment"] = assessment
+    state["stage"] = "worker_selection"
+    if args.uncertainty_evidence_key is not None:
+        evidence_key = require_text(
+            args.uncertainty_evidence_key, "uncertainty-evidence-key"
+        )
+        evidence = require_text(args.uncertainty_evidence, "uncertainty-evidence")
+        state["pending_adjudication"] = {
+            "trigger": "architecture_security_uncertainty",
+            "evidence_key": evidence_key,
+            "evidence": evidence,
+            "revision": None,
+            "report": None,
+            "requested_at": now_utc(),
+            "outcome": "pending",
+            "resume_stage": "worker_selection",
+        }
+        state["stage"] = "adjudication"
+        add_event(
+            state,
+            "adjudication_requested",
+            trigger="architecture_security_uncertainty",
+            evidence_key=evidence_key,
+            revision=None,
+            report=None,
+        )
+    elif args.uncertainty_evidence is not None:
+        fail("uncertainty-evidence-key is required with uncertainty-evidence")
+    add_event(state, "assessment_recorded", **assessment)
+    save_state(path, state)
+    return state
+
+
+def cmd_request_judge(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    config = strict_config(state)
+    if state["pending_adjudication"] is not None:
+        fail("an adjudication is already pending")
+    trigger = args.trigger
+    judge_policy = config["policy"]["judge"]
+    if trigger == "reviewer_disagreement" and not judge_policy["reviewer_disagreement"]:
+        fail("selected policy does not route reviewer disagreement to Judge")
+    if (
+        trigger == "architecture_security_uncertainty"
+        and not judge_policy["architecture_security_uncertainty"]
+    ):
+        fail("selected policy does not route architecture/security uncertainty to Judge")
+    evidence_key = require_text(args.evidence_key, "evidence-key")
+    if any(item["evidence_key"] == evidence_key for item in state["adjudications"]):
+        fail("adjudication evidence key was already resolved")
+    resume_stage = state["stage"]
+    state["pending_adjudication"] = {
+        "trigger": trigger,
+        "evidence_key": evidence_key,
+        "evidence": require_text(args.evidence, "evidence"),
+        "revision": require_text(args.revision, "revision"),
+        "report": require_text(args.report, "report"),
+        "requested_at": now_utc(),
+        "outcome": "pending",
+        "resume_stage": resume_stage,
+    }
+    state["stage"] = "adjudication"
+    add_event(
+        state,
+        "adjudication_requested",
+        trigger=trigger,
+        evidence_key=evidence_key,
+        revision=state["pending_adjudication"]["revision"],
+        report=state["pending_adjudication"]["report"],
+    )
+    save_state(path, state)
+    return state
+
+
+def cmd_record_judge(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    pending = state.get("pending_adjudication")
+    if not pending:
+        fail("no adjudication is pending")
+    if pending.get("outcome") == "blocked":
+        fail("adjudication is blocked; a controller decision is required")
+    evidence_key = require_text(args.evidence_key, "evidence-key")
+    if evidence_key != pending["evidence_key"]:
+        fail("judge evidence key does not match the pending adjudication")
+    judge_id = require_text(args.judge_id, "judge-id")
+    if judge_id == state["manager_id"]:
+        fail("Judge identity must be independent from the Issue manager")
+    if judge_id == (state.get("worker") or {}).get("id"):
+        fail("Judge identity must be independent from the implementation worker")
+    if judge_id in state["used_reviewer_ids"]:
+        fail("Judge identity must be independent from local reviewers")
+    if judge_id in state["used_judge_ids"]:
+        fail("Judge identity was already used in this Issue")
+    judge_profile = require_text(args.judge_profile, "judge-profile")
+    judge_provider = require_text(args.judge_provider, "judge-provider")
+    judge_model = require_text(args.judge_model, "judge-model")
+    judge_reasoning = require_text(args.judge_reasoning, "judge-reasoning")
+    require_route(
+        judge_profile,
+        judge_model,
+        judge_reasoning,
+        strict_config(state)["roles"]["judge"],
+        "Judge",
+    )
+    report = require_text(args.report, "report")
+    outcome = args.outcome
+    record = {
+        **pending,
+        "judge_id": judge_id,
+        "judge_profile": judge_profile,
+        "judge_provider": judge_provider,
+        "judge_model": judge_model,
+        "judge_reasoning": judge_reasoning,
+        "judge_report": report,
+        "outcome": outcome,
+        "completed_at": now_utc(),
+    }
+    state["adjudications"].append(record)
+    state["used_judge_ids"].append(judge_id)
+    if outcome == "resolved":
+        state["pending_adjudication"] = None
+        state["stage"] = pending["resume_stage"]
+    else:
+        state["pending_adjudication"] = {
+            **pending,
+            "outcome": "blocked",
+            "judge_id": judge_id,
+            "judge_report": report,
+        }
+        state["stage"] = "adjudication_blocked"
+    add_event(
+        state,
+        "adjudication_finished",
+        evidence_key=evidence_key,
+        judge_id=judge_id,
+        outcome=outcome,
+        report=report,
+    )
     save_state(path, state)
     return state
 
@@ -250,9 +558,22 @@ def cmd_record_worker(args: argparse.Namespace) -> dict[str, Any]:
     worker_profile = require_text(args.worker_profile, "worker-profile")
     worker_provider = require_text(args.worker_provider, "worker-provider")
     worker_model = require_text(args.worker_model, "worker-model")
+    worker_reasoning = getattr(args, "worker_reasoning", None)
     continuity = require_worker_continuity(args.continuity)
     existing_worker = state["worker"]
     if existing_worker is None:
+        if is_strict_state(state):
+            require_no_pending_adjudication(state, action="worker selection")
+            if state["assessment"] is None:
+                fail("record the mandatory implementation assessment before worker selection")
+            tier = require_text(args.tier, "tier")
+            if tier != state["assessment"]["tier"]:
+                fail("worker tier must match the recorded assessment")
+            worker_reasoning = require_text(worker_reasoning, "worker-reasoning")
+            expected = strict_config(state)["roles"]["worker"]["tiers"][tier]
+            require_route(
+                worker_profile, worker_model, worker_reasoning, expected, "worker"
+            )
         if state["stage"] != "worker_selection" or state.get("implementation_started_at") is not None:
             fail("first-time worker recording is allowed only in worker_selection")
         state["worker"] = {
@@ -260,6 +581,8 @@ def cmd_record_worker(args: argparse.Namespace) -> dict[str, Any]:
             "profile": worker_profile,
             "provider": worker_provider,
             "model": worker_model,
+            "reasoning": worker_reasoning,
+            "tier": state["assessment"]["tier"] if is_strict_state(state) else None,
             "recorded_at": now_utc(),
         }
         state["worker_continuity"] = continuity
@@ -271,6 +594,7 @@ def cmd_record_worker(args: argparse.Namespace) -> dict[str, Any]:
             worker_profile=worker_profile,
             worker_provider=worker_provider,
             worker_model=worker_model,
+            worker_reasoning=worker_reasoning,
             continuity=continuity,
         )
         save_state(path, state)
@@ -286,6 +610,7 @@ def cmd_record_worker(args: argparse.Namespace) -> dict[str, Any]:
         fail("implementation worker is already recorded")
     existing_worker["provider"] = worker_provider
     existing_worker["model"] = worker_model
+    existing_worker["reasoning"] = worker_reasoning
     existing_worker["enriched_at"] = now_utc()
     add_event(
         state,
@@ -294,6 +619,7 @@ def cmd_record_worker(args: argparse.Namespace) -> dict[str, Any]:
         worker_profile=worker_profile,
         worker_provider=worker_provider,
         worker_model=worker_model,
+        worker_reasoning=worker_reasoning,
         continuity=continuity,
     )
     save_state(path, state)
@@ -305,6 +631,7 @@ def cmd_start_implementation(args: argparse.Namespace) -> dict[str, Any]:
     state = load_state(path)
     if state.get("legacy_in_progress"):
         fail("start-implementation is unavailable for legacy in-progress states")
+    require_no_pending_adjudication(state, action="implementation start")
     if state["stage"] != "worker_selected":
         if state["stage"] == "implementing" and state.get("implementation_started_at") is not None:
             fail("implementation is already started")
@@ -321,6 +648,7 @@ def cmd_start_implementation(args: argparse.Namespace) -> dict[str, Any]:
         worker_profile=worker["profile"],
         worker_provider=worker["provider"],
         worker_model=worker["model"],
+        worker_reasoning=worker.get("reasoning"),
     )
     save_state(path, state)
     return state
@@ -331,6 +659,7 @@ def cmd_start_review(args: argparse.Namespace) -> dict[str, Any]:
     state = load_state(path)
     require_worker_recorded(state, action="starting review")
     require_implementation_started(state, action="starting review")
+    require_no_pending_adjudication(state, action="starting review")
     if state["local_review_closed"]:
         fail("local review is already closed")
     if state["active_review"]:
@@ -342,12 +671,38 @@ def cmd_start_review(args: argparse.Namespace) -> dict[str, Any]:
         fail("review limit reached; another completed review is forbidden")
     reviewer_id = require_text(args.reviewer_id, "reviewer-id")
     reviewer_profile = require_text(args.reviewer_profile, "reviewer-profile")
+    if reviewer_id == state["manager_id"]:
+        fail("reviewer identity must be independent from the Issue manager")
+    if reviewer_id == state["worker"]["id"]:
+        fail("reviewer identity must be independent from the implementation worker")
+    if reviewer_id in state["used_judge_ids"]:
+        fail("reviewer identity must be independent from Judge identities")
     if reviewer_id in state["used_reviewer_ids"]:
         fail("reviewer identity was already used in this Issue")
+    reviewer_provider = getattr(args, "reviewer_provider", None)
+    reviewer_model = getattr(args, "reviewer_model", None)
+    reviewer_reasoning = getattr(args, "reviewer_reasoning", None)
+    if is_strict_state(state):
+        reviewer_provider = require_text(reviewer_provider, "reviewer-provider")
+        reviewer_model = require_text(reviewer_model, "reviewer-model")
+        reviewer_reasoning = require_text(reviewer_reasoning, "reviewer-reasoning")
+        require_route(
+            reviewer_profile,
+            reviewer_model,
+            reviewer_reasoning,
+            strict_config(state)["roles"]["reviewer"],
+            "reviewer",
+        )
     round_number = state["review_count"] + 1
     state["active_review"] = True
     state["active_review_number"] = round_number
-    state["active_reviewer"] = {"id": reviewer_id, "profile": reviewer_profile}
+    state["active_reviewer"] = {
+        "id": reviewer_id,
+        "profile": reviewer_profile,
+        "provider": reviewer_provider,
+        "model": reviewer_model,
+        "reasoning": reviewer_reasoning,
+    }
     state["used_reviewer_ids"].append(reviewer_id)
     state["stage"] = "local_review"
     add_event(
@@ -356,6 +711,9 @@ def cmd_start_review(args: argparse.Namespace) -> dict[str, Any]:
         round=round_number,
         reviewer_id=reviewer_id,
         reviewer_profile=reviewer_profile,
+        reviewer_provider=reviewer_provider,
+        reviewer_model=reviewer_model,
+        reviewer_reasoning=reviewer_reasoning,
     )
     save_state(path, state)
     return state
@@ -406,10 +764,38 @@ def cmd_finish_review(args: argparse.Namespace) -> dict[str, Any]:
     if args.outcome == "pass":
         state["needs_fix"] = False
         state["local_review_closed"] = True
+        state["last_local_pass"] = {
+            "round": round_number,
+            "reviewer_id": reviewer.get("id"),
+            "report": report,
+            "at": now_utc(),
+        }
         state["stage"] = "local_review_complete"
     else:
+        state["failed_review_cycles"] += 1
         state["needs_fix"] = True
         state["stage"] = "fixing"
+        if is_strict_state(state) and state["failed_review_cycles"] >= 2:
+            evidence_key = require_text(
+                getattr(args, "adjudication_evidence_key", None),
+                "adjudication-evidence-key",
+            )
+            if any(
+                item["evidence_key"] == evidence_key
+                for item in state["adjudications"]
+            ):
+                fail("adjudication evidence key was already resolved")
+            state["pending_adjudication"] = {
+                "trigger": "failed_review_cycle",
+                "evidence_key": evidence_key,
+                "evidence": summary,
+                "revision": f"local-review-{round_number}",
+                "report": report,
+                "requested_at": now_utc(),
+                "outcome": "pending",
+                "resume_stage": "fixing",
+            }
+            state["stage"] = "adjudication"
     add_event(
         state,
         "review_finished",
@@ -419,7 +805,17 @@ def cmd_finish_review(args: argparse.Namespace) -> dict[str, Any]:
         outcome=args.outcome,
         report=report,
         summary=summary,
+        failed_review_cycles=state["failed_review_cycles"],
     )
+    if state.get("pending_adjudication"):
+        add_event(
+            state,
+            "adjudication_requested",
+            trigger=state["pending_adjudication"]["trigger"],
+            evidence_key=state["pending_adjudication"]["evidence_key"],
+            revision=state["pending_adjudication"]["revision"],
+            report=state["pending_adjudication"]["report"],
+        )
     save_state(path, state)
     return state
 
@@ -428,6 +824,7 @@ def cmd_record_fix(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
     require_implementation_started(state, action="recording a fix")
+    require_no_pending_adjudication(state, action="recording a fix")
     if state["active_review"]:
         fail("finish the active review before recording a fix")
     if not state["needs_fix"]:
@@ -435,6 +832,8 @@ def cmd_record_fix(args: argparse.Namespace) -> dict[str, Any]:
     require_worker_match(state, args)
     report = require_text(args.report, "report")
     validation = require_text(args.validation, "validation")
+    if is_strict_state(state) and state["review_count"] == review_limit(state):
+        fail("strict policy requires a reviewer PASS and no review rounds remain")
     state["needs_fix"] = False
     final_fix = state["review_count"] == review_limit(state)
     if final_fix:
@@ -452,6 +851,9 @@ def cmd_record_pr(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
     require_implementation_started(state, action="recording a PR")
+    require_no_pending_adjudication(state, action="recording a PR")
+    if is_strict_state(state) and state.get("last_local_pass") is None:
+        fail("strict policy requires a configured-reviewer PASS before PR preparation")
     if not state["local_review_closed"] or state["active_review"] or state["needs_fix"]:
         fail("local review must be closed with no active review or pending fix")
     if state["pr_url"] is not None:
@@ -477,6 +879,7 @@ def cmd_record_pr(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_mark_ready(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
+    require_no_pending_adjudication(state, action="marking the PR Ready")
     if state["stage"] != "pr_draft" or state["pr_url"] is None:
         fail("a recorded Draft PR is required before Ready for review")
     if state["remote_feedback_started_at"] is not None:
@@ -491,6 +894,7 @@ def cmd_mark_ready(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_mark_feedback_fetched(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
+    require_no_pending_adjudication(state, action="fetching remote feedback")
     snapshot = require_text(args.snapshot, "snapshot")
     started_raw = state["remote_feedback_started_at"]
     if started_raw is None:
@@ -513,6 +917,7 @@ def cmd_record_remote_assessment(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
     require_implementation_started(state, action="recording remote assessment")
+    require_no_pending_adjudication(state, action="recording remote assessment")
     if state["remote_feedback_fetched_at"] is None:
         fail("record the one allowed remote feedback fetch first")
     if state["remote_assessment"] is not None:
@@ -534,6 +939,7 @@ def cmd_record_remote_assessment(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_resolve_blocked(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
+    require_no_pending_adjudication(state, action="resolving blocked remote feedback")
     if not state["remote_assessment"] or state["remote_assessment"]["outcome"] != "blocked":
         fail("a blocked remote assessment is required")
     if state["stage"] != "blocked" or state["blocked_resolution"] is not None:
@@ -550,6 +956,7 @@ def cmd_record_remote_fix(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
     require_implementation_started(state, action="recording remote fix")
+    require_no_pending_adjudication(state, action="recording remote fix")
     assessment_requires_changes = bool(state["remote_assessment"] and state["remote_assessment"]["outcome"] == "changes")
     resolution_requires_changes = bool(state["blocked_resolution"] and state["blocked_resolution"]["decision"] == "changes")
     if not assessment_requires_changes and not resolution_requires_changes:
@@ -583,6 +990,7 @@ def cmd_record_check_repair(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
     require_implementation_started(state, action="recording check repair")
+    require_no_pending_adjudication(state, action="recording check repair")
     if state["pr_url"] is None:
         fail("record the PR before check repair")
     if state["merged_at"] is not None:
@@ -674,6 +1082,7 @@ def cmd_record_review_threads(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_mark_merged(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
+    require_no_pending_adjudication(state, action="recording merge")
     if state["stage"] != "merge_ready" or state["remote_assessment"] is None:
         fail("completed remote assessment is required before merge")
     if not state["checks_passed"]:
@@ -806,29 +1215,44 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--issue", required=True)
     init.add_argument("--branch", required=True)
     init.add_argument("--manager-id", required=True)
+    init.add_argument("--runtime-snapshot")
+    init.add_argument("--manager-profile")
+    init.add_argument("--manager-model")
+    init.add_argument("--manager-reasoning")
     init.set_defaults(handler=cmd_init)
+
+    assessment = commands.add_parser(
+        "record-assessment", help="record mandatory implementation tier evidence"
+    )
+    add_state_file(assessment)
+    assessment.add_argument("--affected-modules", required=True)
+    assessment.add_argument("--coupling-and-difficulty", required=True)
+    assessment.add_argument("--unresolved-decisions", required=True)
+    assessment.add_argument("--tier", choices=("simple", "normal", "complex", "extreme"), required=True)
+    assessment.add_argument("--validation-plan", required=True)
+    assessment.add_argument("--uncertainty-evidence-key")
+    assessment.add_argument("--uncertainty-evidence")
+    assessment.set_defaults(handler=cmd_record_assessment)
 
     worker = commands.add_parser("record-worker", help="record the one implementation worker and continuity contract")
     add_state_file(worker)
-    worker.add_argument("--worker-id", required=True)
-    worker.add_argument("--worker-profile", required=True)
-    worker.add_argument("--worker-provider", required=True)
-    worker.add_argument("--worker-model", required=True)
+    add_worker_identity_args(worker)
+    worker.add_argument("--tier", choices=("simple", "normal", "complex", "extreme"))
     worker.add_argument("--continuity", required=True)
     worker.set_defaults(handler=cmd_record_worker)
 
     start_implementation = commands.add_parser("start-implementation", help="record the worker-selected implementation start boundary")
     add_state_file(start_implementation)
-    start_implementation.add_argument("--worker-id", required=True)
-    start_implementation.add_argument("--worker-profile", required=True)
-    start_implementation.add_argument("--worker-provider", required=True)
-    start_implementation.add_argument("--worker-model", required=True)
+    add_worker_identity_args(start_implementation)
     start_implementation.set_defaults(handler=cmd_start_implementation)
 
     start = commands.add_parser("start-review", help="reserve the next reviewer round")
     add_state_file(start)
     start.add_argument("--reviewer-id", required=True)
     start.add_argument("--reviewer-profile", required=True)
+    start.add_argument("--reviewer-provider")
+    start.add_argument("--reviewer-model")
+    start.add_argument("--reviewer-reasoning")
     start.set_defaults(handler=cmd_start_review)
 
     abort = commands.add_parser("abort-review", help="abort a reviewer attempt without consuming a round")
@@ -841,17 +1265,44 @@ def build_parser() -> argparse.ArgumentParser:
     finish.add_argument("--outcome", choices=("pass", "changes"), required=True)
     finish.add_argument("--report", required=True)
     finish.add_argument("--summary", required=True)
+    finish.add_argument("--adjudication-evidence-key")
     finish.set_defaults(handler=cmd_finish_review)
 
     fix = commands.add_parser("record-fix", help="record the worker fix after findings")
     add_state_file(fix)
-    fix.add_argument("--worker-id", required=True)
-    fix.add_argument("--worker-profile", required=True)
-    fix.add_argument("--worker-provider", required=True)
-    fix.add_argument("--worker-model", required=True)
+    add_worker_identity_args(fix)
     fix.add_argument("--report", required=True)
     fix.add_argument("--validation", required=True)
     fix.set_defaults(handler=cmd_record_fix)
+
+    request_judge = commands.add_parser(
+        "request-judge", help="record a concrete disagreement or uncertainty"
+    )
+    add_state_file(request_judge)
+    request_judge.add_argument(
+        "--trigger",
+        choices=("reviewer_disagreement", "architecture_security_uncertainty"),
+        required=True,
+    )
+    request_judge.add_argument("--evidence-key", required=True)
+    request_judge.add_argument("--evidence", required=True)
+    request_judge.add_argument("--revision", required=True)
+    request_judge.add_argument("--report", required=True)
+    request_judge.set_defaults(handler=cmd_request_judge)
+
+    judge = commands.add_parser(
+        "record-judge", help="record the separate read-only Judge decision"
+    )
+    add_state_file(judge)
+    judge.add_argument("--judge-id", required=True)
+    judge.add_argument("--judge-profile", required=True)
+    judge.add_argument("--judge-provider", required=True)
+    judge.add_argument("--judge-model", required=True)
+    judge.add_argument("--judge-reasoning", required=True)
+    judge.add_argument("--evidence-key", required=True)
+    judge.add_argument("--report", required=True)
+    judge.add_argument("--outcome", choices=("resolved", "blocked"), required=True)
+    judge.set_defaults(handler=cmd_record_judge)
 
     pr = commands.add_parser("record-pr", help="record the Draft PR and Issue-closing reference")
     add_state_file(pr)
@@ -871,10 +1322,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     assessment = commands.add_parser("record-remote-assessment", help="record the one remote-feedback assessment")
     add_state_file(assessment)
-    assessment.add_argument("--worker-id", required=True)
-    assessment.add_argument("--worker-profile", required=True)
-    assessment.add_argument("--worker-provider", required=True)
-    assessment.add_argument("--worker-model", required=True)
+    add_worker_identity_args(assessment)
     assessment.add_argument("--outcome", choices=("clean", "changes", "blocked"), required=True)
     assessment.add_argument("--report", required=True)
     assessment.set_defaults(handler=cmd_record_remote_assessment)
@@ -887,20 +1335,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     remote_fix = commands.add_parser("record-remote-fix", help="record manager-validated remote changes")
     add_state_file(remote_fix)
-    remote_fix.add_argument("--worker-id", required=True)
-    remote_fix.add_argument("--worker-profile", required=True)
-    remote_fix.add_argument("--worker-provider", required=True)
-    remote_fix.add_argument("--worker-model", required=True)
+    add_worker_identity_args(remote_fix)
     remote_fix.add_argument("--head-sha", required=True)
     remote_fix.add_argument("--validation", required=True)
     remote_fix.set_defaults(handler=cmd_record_remote_fix)
 
     check_repair = commands.add_parser("record-check-repair", help="record an Issue-caused repair for failed checks on the current PR HEAD")
     add_state_file(check_repair)
-    check_repair.add_argument("--worker-id", required=True)
-    check_repair.add_argument("--worker-profile", required=True)
-    check_repair.add_argument("--worker-provider", required=True)
-    check_repair.add_argument("--worker-model", required=True)
+    add_worker_identity_args(check_repair)
     check_repair.add_argument("--head-sha", required=True)
     check_repair.add_argument("--validation", required=True)
     check_repair.add_argument("--evidence", required=True)

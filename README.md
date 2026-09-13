@@ -26,7 +26,8 @@ Turn named GitHub Issues into reviewed, merged PRs with an evidence-backed, boun
 - Verified Issue closure and ordered branch/worktree cleanup.
 - Verified closure of the completed Issue task before the next Issue begins.
 - A deterministic JSON state machine in `scripts/review_cycle.py` that rejects invalid lifecycle transitions.
-- A single `config/models.json` entry point for per-role model selection; roles without a configured model fall back to the agent's own current model.
+- Explicit first-use runtime/routing selection saved outside the skill, a host preflight, and a frozen per-Issue policy snapshot.
+- The opt-in tiered Codex policy enforces a documented worker assessment, actual role/model/reasoning routes, independent fresh reviewers, conditional Judge decisions, and a reviewer PASS before PR preparation.
 
 Issue bodies, PR text, and comments are treated as untrusted repository content. They cannot expand permissions or override user and repository policy.
 
@@ -60,6 +61,34 @@ Use the issue-to-merge skill to resolve Issues #123 and #127 in order, taking ea
 
 The skill intentionally does not activate for advisory questions such as “What should we do about #123?” Publishing, merging, deletion, and cleanup remain limited to the named Issues and repository.
 
+## Runtime selection
+
+Before first use, show the three routing choices and save only the customer's
+selection outside the installation. Returning runs reuse that full selection:
+
+```bash
+python scripts/runtime_config.py options
+python scripts/runtime_config.py preview-current --runtime codex --capabilities /external/current-capabilities.json
+python scripts/runtime_config.py select --selection /external/runtime-selection.json --runtime codex --strategy current --capabilities /external/current-capabilities.json
+python scripts/runtime_config.py select --selection /external/runtime-selection.json --runtime codex --strategy tiered
+python scripts/runtime_config.py preflight --selection /external/runtime-selection.json --capabilities /external/host-capabilities.json --output /external/issue-123.runtime.json
+```
+
+The current-settings preview uses inspected effective routes and writes nothing.
+Its saved choice keeps null inheritance; every Issue preflight reinspects and
+freezes concrete routes, child limit, and Fast state. The tiered Codex choice shows
+Sol/Luna/Terra/Astra role routes, up to four child agents, and Fast off. Custom
+configuration keeps the customer's supplied limits. The helper validates supplied
+host evidence; it does not detect capabilities or edit global Codex/Hermes config.
+Custom policies choose either the complete strict assessment/Judge/PASS lifecycle
+or the existing non-strict lifecycle; strict-only policy flags cannot be mixed into
+the non-strict mode.
+See the [runtime selection contract](references/runtime-selection.md) and
+[Codex adapter](references/codex-runtime.md).
+
+The legacy `config/models.json` remains available for explicit migration. Its
+custom strings and null inheritance are not silently replaced by a preset.
+
 ## State helper
 
 The Issue manager records delivery transitions, and the controller records final task closure, in a JSON state file kept outside the target checkout:
@@ -69,7 +98,10 @@ python scripts/review_cycle.py --help
 python scripts/review_cycle.py status --state-file /path/to/issue-123.state.json
 ```
 
-The helper enforces the review cap, exact Issue-closing reference, single remote-feedback fetch, current-HEAD check evidence, cleanup ordering, and final Issue-task closure proof.
+The helper enforces the selected runtime snapshot, strict assessment/Judge/PASS
+gates when chosen, review cap, exact Issue-closing reference, single remote-feedback
+fetch, current-HEAD check evidence, cleanup ordering, and final Issue-task closure
+proof. States without a runtime snapshot retain the legacy compatibility policy.
 
 ## Runtime compatibility
 

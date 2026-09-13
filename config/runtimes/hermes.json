@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "preset_id": "hermes-profiles-example-v1",
+  "label": "Hermes Profiles/Kanban example",
+  "runtime": "hermes",
+  "selection_strategy": "custom",
+  "roles": {
+    "manager": {
+      "role": "manager",
+      "profile": "issue-manager",
+      "provider": "example-provider",
+      "model": "example-manager-model"
+    },
+    "worker": {
+      "tiers": {
+        "simple": {
+          "role": "worker",
+          "profile": "issue-worker-simple",
+          "provider": "example-provider",
+          "model": "example-worker-model"
+        },
+        "normal": {
+          "role": "worker",
+          "profile": "issue-worker",
+          "provider": "example-provider",
+          "model": "example-worker-model"
+        },
+        "complex": {
+          "role": "worker",
+          "profile": "issue-worker-complex",
+          "provider": "example-provider",
+          "model": "example-worker-model"
+        }
+      }
+    },
+    "reviewer": {
+      "role": "reviewer",
+      "profile": "issue-reviewer",
+      "provider": "example-provider",
+      "model": "example-reviewer-model",
+      "fork_turns": "none",
+      "read_only": true
+    },
+    "remote_phase": {
+      "reuse_worker": true
+    }
+  },
+  "constraints": {
+    "max_children": 4,
+    "fast_mode": null,
+    "nested_delegation": true,
+    "max_spawn_depth": 2
+  },
+  "policy": {
+    "id": "hermes-profiles-example-v1",
+    "strict_lifecycle": false,
+    "assessment_required": false,
+    "local_pass_required": false,
+    "review_limit": 15
+  }
+}
