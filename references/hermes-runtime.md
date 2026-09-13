@@ -2,6 +2,18 @@
 
 Use this adapter only on Hermes Agent. Read [hermes-profiles-kanban.md](hermes-profiles-kanban.md) for profile routing, durable worker continuity, and the state-script identity gates before starting an Issue.
 
+First follow [runtime-selection.md](runtime-selection.md). The shipped Hermes JSON
+contains example profile/provider/model names only. Select installed profiles,
+preflight their actual routes and nesting support, and freeze a ready per-Issue
+snapshot. Do not edit Hermes global configuration.
+
+For current settings, inspect and preview the effective manager, worker-tier, and
+reviewer profile/provider/model routes and current child limit before saving. Keep
+the saved fields as null inheritance, then repeat the inspection at each Issue
+preflight so the frozen snapshot contains the concrete routes used for dispatch.
+Fast may be reported as not applicable. Missing effective-route evidence blocks
+dispatch; do not infer a profile from the shipped example.
+
 ## Isolated Issue manager
 
 The main chat is the queue controller only. For each Issue it creates one fresh `delegate_task` manager with `role="orchestrator"`, the configured manager profile/model, and the filled Issue manager prompt. That manager delegates the persistent worker and fresh reviewers as leaf children. Code, diffs, tests, reports, and PR lifecycle work belong in its isolated context. Never flatten these duties into the main chat or create a second manager inside the Issue manager.
