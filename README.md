@@ -5,6 +5,8 @@
 [![Validate](https://github.com/ferryhe/issue-to-merge/actions/workflows/validate.yml/badge.svg)](https://github.com/ferryhe/issue-to-merge/actions/workflows/validate.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+[v0.6.0 release notes](docs/releases/v0.6.0.md) · [runtime onboarding audit](docs/audits/runtime-onboarding-2026-09-13.md)
+
 Turn named GitHub Issues into reviewed, merged PRs with an evidence-backed, bounded multi-agent workflow.
 
 `issue-to-merge` is a portable [Agent Skill](https://agentskills.io) for coding-agent runtimes that support closable top-level tasks, subagent delegation, and GitHub operations. It gives every Issue a fresh top-level task and isolated branch/worktree; uses that task's root agent as manager; keeps one implementation worker for the entire Issue; creates a fresh reviewer for every local-review round; publishes a Draft PR; handles one bounded remote-feedback window; verifies the merge closed the Issue; and closes the completed task before starting the next Issue.
@@ -43,13 +45,17 @@ Issue bodies, PR text, and comments are treated as untrusted repository content.
 
 ## Install
 
-Clone the repository:
+Clone the versioned release:
 
 ```shell
-git clone https://github.com/ferryhe/issue-to-merge.git
+git clone --branch v0.6.0 --depth 1 https://github.com/ferryhe/issue-to-merge.git
 ```
 
 Then register the cloned directory using your agent runtime's skill installation mechanism. The repository root is the complete skill directory: it contains `SKILL.md`, the manager prompt, and the deterministic lifecycle helper.
+
+To track development instead, clone the default branch without `--branch`. A
+version tag is recommended for repeatable installations. GitHub Releases use the
+standard source archives; this project does not require a separate asset.
 
 ## Use
 
@@ -64,15 +70,40 @@ The skill intentionally does not activate for advisory questions such as “What
 ## Runtime selection
 
 Before first use, show the three routing choices and save only the customer's
-selection outside the installation. Returning runs reuse that full selection:
+selection outside the installation. Start by listing the choices:
 
 ```bash
 python scripts/runtime_config.py options
+```
+
+Then run exactly one selection path. For current/inherited Codex settings, first
+preview inspected host evidence, then save that choice:
+
+```bash
 python scripts/runtime_config.py preview-current --runtime codex --capabilities /external/current-capabilities.json
 python scripts/runtime_config.py select --selection /external/runtime-selection.json --runtime codex --strategy current --capabilities /external/current-capabilities.json
+```
+
+For the optional tiered Codex policy:
+
+```bash
 python scripts/runtime_config.py select --selection /external/runtime-selection.json --runtime codex --strategy tiered
+```
+
+For a custom configuration:
+
+```bash
+python scripts/runtime_config.py select --selection /external/runtime-selection.json --runtime codex --strategy custom --config /external/runtime-config.json
+```
+
+Every new Issue uses fresh inspected host evidence to create its frozen snapshot:
+
+```bash
 python scripts/runtime_config.py preflight --selection /external/runtime-selection.json --capabilities /external/host-capabilities.json --output /external/issue-123.runtime.json
 ```
+
+Returning runs reuse the saved selection without asking again unless the customer
+explicitly changes it. Preflight still inspects the host for every new Issue.
 
 The current-settings preview uses inspected effective routes and writes nothing.
 Its saved choice keeps null inheritance; every Issue preflight reinspects and
@@ -83,11 +114,60 @@ host evidence; it does not detect capabilities or edit global Codex/Hermes confi
 Custom policies choose either the complete strict assessment/Judge/PASS lifecycle
 or the existing non-strict lifecycle; strict-only policy flags cannot be mixed into
 the non-strict mode.
+
+The opt-in tiered Codex routes are:
+
+| Work | Role | Model | Reasoning |
+| --- | --- | --- | --- |
+| Issue control | manager | gpt-5.6-sol | medium |
+| Research | researcher | gpt-5.6-luna | low |
+| Code exploration | explorer | gpt-5.6-luna | medium |
+| Simple/normal implementation | worker | gpt-5.6-terra | medium |
+| Complex implementation | senior_worker | gpt-5.6-sol | high |
+| Extreme implementation | expert_worker | gpt-6-astra | high |
+| Local review | reviewer / senior_reviewer | gpt-5.6-sol | high |
+| Adjudication and architecture | judge / architect | gpt-6-astra | high |
+
+Before choosing a worker tier, the manager records affected modules, coupling,
+algorithm/state/migration difficulty, unresolved decisions, and the validation plan. Each
+review round uses a fresh independent reviewer. A separate Judge is required after
+the second and every later completed changes review, for a declared reviewer
+disagreement, or for unresolved architecture/security uncertainty. Strict runs
+require reviewer PASS before PR preparation; current settings and old states keep
+their documented legacy behavior.
+
 See the [runtime selection contract](references/runtime-selection.md) and
 [Codex adapter](references/codex-runtime.md).
 
 The legacy `config/models.json` remains available for explicit migration. Its
 custom strings and null inheritance are not silently replaced by a preset.
+
+## Upgrade from v0.5.0
+
+Back up the complete old installation and local edits before replacing it,
+especially a customized `config/models.json`. Preserve external selections and
+Issue state files, then move a clean clone to the release tag:
+
+```shell
+git fetch --tags origin
+git checkout v0.6.0
+```
+
+Selections created by v0.6.0 are stored outside the installation and target
+repository, so later package upgrades preserve them. On the first v0.6.0 run,
+review any v0.5.0 `config/models.json` mappings and migrate them explicitly instead
+of silently replacing them. Run the new helper from v0.6.0, but point `--legacy`
+at the backed-up old file:
+
+```shell
+python scripts/runtime_config.py migrate-legacy --legacy /backup/v0.5.0/config/models.json --runtime codex --output /external/migrated-runtime.json
+python scripts/runtime_config.py select --selection /external/runtime-selection.json --runtime codex --strategy custom --config /external/migrated-runtime.json
+```
+
+Existing state files without a runtime snapshot retain the v0.5.0-compatible
+legacy lifecycle. New strict assessment/Judge/PASS gates apply only to a newly
+selected strict policy with a ready host-validated snapshot. See the
+[v0.6.0 release notes](docs/releases/v0.6.0.md) for the full upgrade boundary.
 
 ## State helper
 

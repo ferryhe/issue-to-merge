@@ -64,6 +64,10 @@ Save only after the customer selects a choice:
     python scripts/runtime_config.py select --selection /external/runtime-selection.json --runtime codex --strategy tiered
     python scripts/runtime_config.py resolve --selection /external/runtime-selection.json
 
+The current command above, tiered command here, and custom migration command are
+alternative selections. Run exactly one for the customer's decision; running a
+second `select` command intentionally replaces the saved choice.
+
 Returning use reads the saved full effective config. Precedence is explicit
 invocation config/override > saved full selection > the originally selected preset.
 Explicit JSON null means runtime inheritance and is not treated as a missing field.
@@ -72,6 +76,27 @@ observed preview as metadata. A returning run reuses the strategy without asking
 again. Each new Issue supplies fresh inspected evidence to preflight, so inheritance
 can follow an updated current route without silently changing the saved preference.
 Invalid saved data stops setup instead of falling back.
+
+## Upgrade from v0.5.0
+
+Before replacing a v0.5.0 installation, back up the complete old installation and
+any customized `config/models.json`. Keep external `runtime-selection.json` files
+and Issue state files outside the package replacement. Install v0.6.0 into a clean
+directory or move a clean checkout to the version tag; do not reset or overwrite a
+dirty clone.
+
+To preserve legacy role mappings, run the new v0.6.0 helper against the backed-up
+old file, review the candidate, and select it as custom:
+
+    python scripts/runtime_config.py migrate-legacy --legacy /backup/v0.5.0/config/models.json --runtime codex --output /external/migrated-runtime.json
+    python scripts/runtime_config.py select --selection /external/runtime-selection.json --runtime codex --strategy custom --config /external/migrated-runtime.json
+
+Do not point migration at the new package's all-null `config/models.json`; it does
+not contain the old custom values. Package upgrades do not overwrite preferences
+saved at the documented external selection path. Old Issue states without a
+runtime snapshot keep the legacy lifecycle. The strict assessment/Judge/PASS
+policy applies only to new Issues initialized from a ready snapshot after that
+policy is explicitly selected. See the [v0.6.0 release notes](../docs/releases/v0.6.0.md).
 
 ## Host preflight and frozen snapshot
 
