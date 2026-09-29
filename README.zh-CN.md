@@ -5,7 +5,7 @@
 [![Validate](https://github.com/ferryhe/issue-to-merge/actions/workflows/validate.yml/badge.svg)](https://github.com/ferryhe/issue-to-merge/actions/workflows/validate.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[v0.6.0 发布说明](docs/releases/v0.6.0.md) · [运行时 onboarding 审计](docs/audits/runtime-onboarding-2026-09-13.md)
+[v0.7.0 发布说明](docs/releases/v0.7.0.md) · [v0.6.0 发布说明](docs/releases/v0.6.0.md) · [运行时 onboarding 审计](docs/audits/runtime-onboarding-2026-09-13.md)
 
 通过一套有证据、有限且可审计的多代理工作流，把指定的 GitHub Issue 推进为经过审查并已合并的 PR。
 
@@ -48,7 +48,7 @@ Issue 正文、PR 文本、评论和审查意见都被视为不可信的仓库�
 克隆指定版本：
 
 ```shell
-git clone --branch v0.6.0 --depth 1 https://github.com/ferryhe/issue-to-merge.git
+git clone --branch v0.7.0 --depth 1 https://github.com/ferryhe/issue-to-merge.git
 ```
 
 然后按照你的代理运行时所支持的方式注册这个目录。仓库根目录就是完整的 skill 目录，其中包含 `SKILL.md`、manager prompt 和确定性的生命周期脚本。
@@ -160,6 +160,10 @@ python scripts/runtime_config.py select --selection /external/runtime-selection.
 assessment/Judge/PASS 门禁只用于新选择的严格策略，而且必须先生成通过主机核验
 的 ready 快照。完整升级边界见 [v0.6.0 发布说明](docs/releases/v0.6.0.md)。
 
+## 从 v0.6.0 升级
+
+请使用 v0.7.0 标签的干净 checkout，并保留外部运行时选择和 Issue 状态文件。无需迁移状态，也不新增 Python 依赖。TypeSafe 试点默认关闭；只有 manager 被明确指定为 `retrospective-only` 时才会运行。仅设置 `TYPESAFE_API_KEY` 不会启用它。详见 [v0.7.0 发布说明](docs/releases/v0.7.0.md)。
+
 ## 状态脚本
 
 Issue manager 会记录交付阶段，controller 会记录最终任务关闭；这些生命周期跳转都写入目标 checkout 之外的 JSON 状态文件：
@@ -183,6 +187,8 @@ Hermes 每个 Issue 使用独立的 orchestrator manager（`max_spawn_depth >= 2
 ## 设计边界
 
 这是一个刻意严格的 Issue 交付工作流，不是通用的自治循环，也不是 GitHub Issue 分类机器人。只有在用户指定具体 Issue 并授权端到端交付后才会启动。人工审查与仓库分支保护始终具有最终决定权。
+
+可选的 TypeSafe 试点会将结构化判断与已记录的人工结论进行比较。它默认关闭，不会改变流程判断或合并门槛。详见 [`SKILL.md` 中的 TypeSafe 章节](SKILL.md#optional-typesafe-finding-evaluation-pilot)。
 
 ## 许可证
 

@@ -5,7 +5,7 @@
 [![Validate](https://github.com/ferryhe/issue-to-merge/actions/workflows/validate.yml/badge.svg)](https://github.com/ferryhe/issue-to-merge/actions/workflows/validate.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[v0.6.0 release notes](docs/releases/v0.6.0.md) · [runtime onboarding audit](docs/audits/runtime-onboarding-2026-09-13.md)
+[v0.7.0 release notes](docs/releases/v0.7.0.md) · [v0.6.0 release notes](docs/releases/v0.6.0.md) · [runtime onboarding audit](docs/audits/runtime-onboarding-2026-09-13.md)
 
 Turn named GitHub Issues into reviewed, merged PRs with an evidence-backed, bounded multi-agent workflow.
 
@@ -48,7 +48,7 @@ Issue bodies, PR text, and comments are treated as untrusted repository content.
 Clone the versioned release:
 
 ```shell
-git clone --branch v0.6.0 --depth 1 https://github.com/ferryhe/issue-to-merge.git
+git clone --branch v0.7.0 --depth 1 https://github.com/ferryhe/issue-to-merge.git
 ```
 
 Then register the cloned directory using your agent runtime's skill installation mechanism. The repository root is the complete skill directory: it contains `SKILL.md`, the manager prompt, and the deterministic lifecycle helper.
@@ -169,6 +169,10 @@ legacy lifecycle. New strict assessment/Judge/PASS gates apply only to a newly
 selected strict policy with a ready host-validated snapshot. See the
 [v0.6.0 release notes](docs/releases/v0.6.0.md) for the full upgrade boundary.
 
+## Upgrade from v0.6.0
+
+Use a clean checkout at the v0.7.0 tag and preserve external runtime selections and Issue state files. No state migration or new Python dependency is required. The TypeSafe pilot stays disabled unless a manager is explicitly assigned `retrospective-only`; setting `TYPESAFE_API_KEY` alone does not enable it. See the [v0.7.0 release notes](docs/releases/v0.7.0.md).
+
 ## State helper
 
 The Issue manager records delivery transitions, and the controller records final task closure, in a JSON state file kept outside the target checkout:
@@ -192,6 +196,8 @@ Runtime tool names are intentionally not prescribed. Map each Issue to a fresh c
 ## Design boundary
 
 This is an intentionally strict delivery workflow, not a generic autonomous loop or a GitHub Issue triage bot. It starts only after the user identifies concrete Issues and authorizes end-to-end delivery. Human review and repository branch protections remain authoritative.
+
+The optional TypeSafe pilot compares its structured finding judgments with recorded human dispositions. It is disabled by default and never changes workflow decisions or merge gates. See the [TypeSafe section in `SKILL.md`](SKILL.md#optional-typesafe-finding-evaluation-pilot).
 
 ## License
 
