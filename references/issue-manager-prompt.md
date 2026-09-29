@@ -20,6 +20,7 @@ Assigned environment:
 - Frozen runtime snapshot: <ABSOLUTE_READY_RUNTIME_SNAPSHOT_OUTSIDE_CHECKOUT>
 - Required checks: <CHECKS>
 - Review-policy override: <EXACT_TOP_LEVEL_USER_INSTRUCTION_OR_NONE>
+- TypeSafe evaluation mode: <disabled|retrospective-only; default disabled>
 - Authorized external actions: commit, push, create Draft PR, mark Ready for review, merge when gates pass, delete this Issue's remote/local branch and worktree.
 
 Before creating any child, load the ready runtime snapshot, verify that your actual
