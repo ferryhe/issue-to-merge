@@ -46,10 +46,23 @@ keyed to that completed round. Aborted attempts and check failures do not increm
 this count. A resolved Judge decision clears only that decision; it does not reset
 the count or create a review PASS. A blocked decision stops the affected path.
 
-The strict preset requires a configured-reviewer PASS before PR preparation. If
-the last allowed review returns changes, the Issue remains blocked; there is no
-unreviewed final-fix bypass and no extra review.
+A customer may select a custom route using TypeSafe (`provider: typesafe-ai`,
+`model: jev-latest`, `reasoning: structured`) for Judge decisions and requires
+`TYPESAFE_API_KEY`. It also runs the structured TypeSafe assessment for every
+local and remote review. Those API calls do not spawn child agents. The Architect
+remains a separate agent on its configured Codex route and supplies code/design analysis when
+needed; TypeSafe chooses only among bounded, evidence-backed options. Do not route
+Judge work to Astra or another Codex agent under this custom selection.
+
+The strict preset normally requires a configured-reviewer PASS before PR preparation.
+If the last allowed review returns changes, complete any required configured Judge
+adjudication, have the same worker fix accepted findings, validate and record the
+final unreviewed fix, then commit and continue to PR preparation without another
+local review. Never record that fix as reviewer PASS. Unresolved adjudication,
+failed validation, required checks, and branch protection still block progress.
 
 Any strict custom policy also specifies concrete model and reasoning for manager,
-every worker tier, reviewer, and Judge. Host preflight validates those selected
-routes; it never replaces a customer's Judge with the shipped preset route.
+every worker tier, and reviewer. A TypeSafe Judge route uses the exact provider,
+model, and structured mode shown above; host preflight checks the API key and
+skips Codex host-model checks for that service. Other custom Judge routes remain
+supported by the runtime contract. Never replace a selected provider implicitly.

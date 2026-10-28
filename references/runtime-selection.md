@@ -12,7 +12,7 @@ table:
 | Choice | Routing | Review policy | Limits |
 | --- | --- | --- | --- |
 | Current settings | Inherit the runtime's inspected current role routes or selected Hermes profiles | Existing legacy review lifecycle | Inspected current host limits |
-| Tiered Codex | Manager Sol/medium; research Luna/low; exploration Luna/medium; normal worker Terra/medium; complex worker Sol/high; extreme worker Astra/high; all review Sol/high; Judge/architect Astra/high | Mandatory assessment, conditional Judge, and reviewer PASS | Up to 4 child agents; Fast off |
+| Tiered Codex | Manager Sol/medium; research Luna/low; exploration Luna/medium; normal worker Terra/medium; complex worker Sol/high; extreme worker Astra/high; all review Sol/high; Judge/architect Astra/high | Mandatory assessment, conditional Judge, and reviewer PASS except for the final tested fix at the review limit | Up to 4 child agents; Fast off |
 | Custom | The routes and reasoning in the customer's JSON config | The policy explicitly supplied in that config | Supplied concurrency/Fast values, bounded by host capability |
 
 For Hermes, select installed profiles before saving. The shipped Hermes JSON is an
@@ -21,7 +21,9 @@ exist on a customer's host.
 
 Custom policy supports two coherent modes. A strict Codex lifecycle sets
 `strict_lifecycle`, `assessment_required`, and `local_pass_required` to true and
-supplies the required `policy.judge` triggers. A non-strict lifecycle sets both
+supplies the required `policy.judge` triggers. At the review limit, a recorded final
+tested fix after any required adjudication closes local review without another
+review or a fabricated PASS. A non-strict lifecycle sets both
 requirement flags to false and omits `policy.judge`. Judge lifecycle settings are
 strict-only because assessment, adjudication, and mandatory PASS transitions are
 implemented together. An optional `roles.judge` route is separate and may remain
@@ -120,9 +122,11 @@ dispatch settings, not defaults inferred from an availability catalogue.
 Partial inheritance in a non-strict custom config follows the same rule. The
 current route must reflect every explicit selected field; a conflicting route is
 rejected rather than substituted. Strict Codex policies require explicit
-model/reasoning for manager, workers, reviewer, and Judge. Custom strict policies
-may choose any supported concrete Judge route; they are not forced to use the
-shipped Astra route.
+model/reasoning for manager, workers, and reviewer. A TypeSafe Judge route is
+declared as `provider: typesafe-ai`, `model: jev-latest`, and
+`reasoning: structured`; preflight requires `TYPESAFE_API_KEY` and does not check
+Jev against the Codex host model catalogue. The Architect remains a separate
+Codex route.
 
 Pass the ready snapshot to review_cycle.py init. Preflight resolves inherited
 values from the fresh evidence, validates the resulting routes, and freezes those
