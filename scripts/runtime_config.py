@@ -85,12 +85,18 @@ def _validate_route(route: Any, field: str, runtime: str, *, read_only: bool = F
     value = _mapping(route, field)
     _nonempty(value.get("role"), f"{field}.role")
     if runtime == "codex":
-        _nonempty(value.get("model"), f"{field}.model", allow_null=True)
-        reasoning = value.get("reasoning")
-        if reasoning is not None and reasoning not in THINKING_LEVELS:
-            raise ConfigError(
-                f"{field}.reasoning must be null or one of: {', '.join(sorted(THINKING_LEVELS))}"
-            )
+        if value.get("provider") == "typesafe-ai":
+            if field != "roles.judge" or value.get("role") != "judge":
+                raise ConfigError("TypeSafe routing is supported only for roles.judge")
+            if value.get("model") != "jev-latest" or value.get("reasoning") != "structured":
+                raise ConfigError("TypeSafe Judge must use jev-latest/structured")
+        else:
+            _nonempty(value.get("model"), f"{field}.model", allow_null=True)
+            reasoning = value.get("reasoning")
+            if reasoning is not None and reasoning not in THINKING_LEVELS:
+                raise ConfigError(
+                    f"{field}.reasoning must be null or one of: {', '.join(sorted(THINKING_LEVELS))}"
+                )
     else:
         for name in ("profile", "provider", "model"):
             _nonempty(value.get(name), f"{field}.{name}", allow_null=True)
@@ -187,11 +193,15 @@ def validate_config(config: dict[str, Any], expected_runtime: str | None = None)
         for name, route in (
             ("roles.manager", roles["manager"]),
             ("roles.reviewer", roles["reviewer"]),
-            ("roles.judge", roles["judge"]),
             *((f"roles.worker.tiers.{tier}", tiers[tier]) for tier in TIERS),
         ):
             if route.get("model") is None or route.get("reasoning") is None:
                 raise ConfigError(f"{name} must select an explicit model and reasoning")
+        if roles["judge"].get("provider") != "typesafe-ai" and (
+            roles["judge"].get("model") is None
+            or roles["judge"].get("reasoning") is None
+        ):
+            raise ConfigError("roles.judge must select an explicit route")
     else:
         enabled = [
             name
@@ -536,6 +546,10 @@ def validate_capabilities(config: dict[str, Any], capabilities: dict[str, Any]) 
         raise ConfigError("host capability runtime does not match selected runtime")
     evidence = capabilities.get("evidence")
     _nonempty(evidence, "capabilities.evidence")
+    if any(
+        route.get("provider") == "typesafe-ai" for _, route in _route_pairs(config)
+    ) and not os.environ.get("TYPESAFE_API_KEY"):
+        raise ConfigError("TYPESAFE_API_KEY is required for the selected TypeSafe Judge")
     for field in ("persistent_worker", "fresh_isolated_reviewers"):
         if capabilities.get(field) is not True:
             raise ConfigError(f"host must attest {field}=true")
@@ -547,6 +561,8 @@ def validate_capabilities(config: dict[str, Any], capabilities: dict[str, Any]) 
     if runtime == "codex":
         available = _mapping(capabilities.get("models"), "capabilities.models")
         for name, route in _route_pairs(config):
+            if route.get("provider") == "typesafe-ai":
+                continue
             model = route.get("model")
             reasoning = route.get("reasoning")
             if model is None:

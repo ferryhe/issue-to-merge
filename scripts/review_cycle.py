@@ -61,7 +61,11 @@ def normalize_state(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("worker", None)
     state.setdefault("worker_continuity", SUPPORTED_WORKER_CONTINUITY)
     state.setdefault("active_reviewer", None)
+    state.setdefault("typesafe_review", None)
     state.setdefault("used_reviewer_ids", [])
+    state.setdefault("copilot_review_requests", [])
+    state.setdefault("copilot_review_started_at", None)
+    state.setdefault("copilot_unavailable", None)
     state.setdefault("check_repair_count", 0)
     state.setdefault("check_repairs", [])
     state.setdefault("review_threads_evidence", None)
@@ -111,6 +115,12 @@ def load_state(path: Path) -> dict[str, Any]:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         fail(f"cannot read state file {path}: {exc}")
+    if state.get("mode", "full") not in {"full", "quick"}:
+        fail("invalid delivery mode")
+    if state.get("copilot_mode", "legacy") not in {"auto", "off", "legacy"}:
+        fail("invalid Copilot mode")
+    # Legacy states may queue repeats; Copilot now runs once per PR.
+    state["copilot_review_pending"] = False
     if state.get("schema_version") != SCHEMA_VERSION:
         fail("unsupported or missing schema_version")
     max_reviews = state.get("max_reviews")
@@ -289,6 +299,143 @@ def add_worker_identity_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--worker-reasoning")
 
 
+def is_quick(state: dict[str, Any]) -> bool:
+    return state.get("mode", "full") == "quick"
+
+
+def copilot_enabled(state: dict[str, Any]) -> bool:
+    return state.get("copilot_mode", "legacy") != "off" and not state.get("copilot_unavailable")
+
+
+def quick_fix_impact(
+    state: dict[str, Any], args: argparse.Namespace, *, final_review_fix: bool = False
+) -> str | None:
+    if not is_quick(state):
+        return None
+    impact = getattr(args, "review_impact", None)
+    if impact not in {"none", "material"}:
+        fail("quick fixes require review-impact none or material")
+    evidence = require_text(getattr(args, "impact_evidence", None), "impact-evidence")
+    if impact == "material" and state["review_count"] >= review_limit(state) and not final_review_fix:
+        fail("review limit reached; a material fix needs another independent review")
+    state["quick_fix_validation"] = {"impact": impact, "evidence": evidence, "at": now_utc()}
+    add_event(state, "quick_fix_impact", impact=impact, evidence=evidence)
+    return impact
+
+
+def quick_published_fix(state: dict[str, Any], impact: str | None) -> None:
+    if impact == "material":
+        state["local_review_closed"] = False
+        state["copilot_review_pending"] = False
+        state["quick_fix_validation"] = None
+
+
+def cmd_record_copilot_request(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    if not copilot_enabled(state):
+        fail("Copilot is disabled for this Issue")
+    if state["merged_at"] is not None or state["active_review"] or state["needs_fix"] or not state["local_review_closed"]:
+        fail("complete local review and pending fixes before requesting Copilot")
+    if state.get("pending_adjudication"):
+        fail("resolve pending adjudication before requesting Copilot")
+    if state["stage"] not in {"pr_ready", "merge_ready"}:
+        fail("complete the current remote assessment and fixes before requesting Copilot")
+    if state["remote_feedback_started_at"] is None:
+        fail("mark the PR Ready before recording a Copilot request")
+    head_sha = require_text(args.head_sha, "head-sha")
+    if head_sha != state["pr_head_sha"]:
+        fail("Copilot request must refer to the current PR HEAD")
+    evidence = require_text(args.evidence, "evidence")
+    requests = state.setdefault("copilot_review_requests", [])
+    if requests:
+        fail("Copilot may be requested only once per PR")
+    if state["remote_feedback_fetched_at"] is not None:
+        fail("request Copilot only during initial PR publication")
+    ready_head = state.get("ready_head_sha") or next(
+        (event.get("head_sha") for event in state["history"] if event.get("kind") == "pr_marked_ready"),
+        None,
+    )
+    if head_sha != ready_head:
+        fail("request Copilot only during initial PR publication, before later pushes")
+    started = now_utc()
+    requests.append({"head_sha": head_sha, "evidence": evidence, "at": started})
+    state["copilot_review_started_at"] = started
+    state["copilot_review_pending"] = False
+    state["remote_feedback_fetched_at"] = None
+    state["remote_feedback_snapshot"] = None
+    state["remote_assessment"] = None
+    state["blocked_resolution"] = None
+    state["review_threads_evidence"] = None
+    state["stage"] = "pr_ready"
+    add_event(state, "copilot_review_requested", head_sha=head_sha, evidence=evidence)
+    save_state(path, state)
+    return state
+
+
+def cmd_record_copilot_unavailable(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    if not copilot_enabled(state):
+        fail("Copilot is disabled for this Issue")
+    if state["remote_feedback_fetched_at"] is not None:
+        fail("remote feedback was already fetched; its Copilot outcome is final")
+    if state["merged_at"] is not None or state["stage"] not in {"pr_ready", "merge_ready"}:
+        fail("a Ready PR is required before recording Copilot unavailability")
+    if state["active_review"] or state["needs_fix"] or not state["local_review_closed"]:
+        fail("complete the required local review and fixes before recording Copilot unavailability")
+    if state.get("pending_adjudication"):
+        fail("resolve pending adjudication before recording Copilot unavailability")
+    head_sha = require_text(args.head_sha, "head-sha")
+    if head_sha != state["pr_head_sha"]:
+        fail("Copilot evidence must refer to the current PR HEAD")
+    evidence_path = Path(require_text(args.evidence, "evidence")).resolve()
+    try:
+        denial = json.loads(evidence_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read Copilot unavailability evidence: {exc}")
+    if (
+        not isinstance(denial, dict)
+        or denial.get("head_sha") != head_sha
+        or denial.get("pr_url") != state["pr_url"]
+        or denial.get("code_review_completed") is not False
+        or not isinstance(denial.get("reason"), str)
+        or not denial["reason"].strip()
+    ):
+        fail("evidence must prove an unavailable review for the current PR HEAD")
+    snapshot_path = None
+    if getattr(args, "snapshot", None):
+        snapshot_path = Path(require_text(args.snapshot, "snapshot")).resolve()
+        try:
+            if not snapshot_path.read_text(encoding="utf-8-sig").strip():
+                fail("feedback snapshot must be nonempty")
+        except OSError as exc:
+            fail(f"cannot read feedback snapshot: {exc}")
+    recorded_at = now_utc()
+    state["copilot_unavailable"] = {
+        "head_sha": head_sha,
+        "reason": denial["reason"].strip(),
+        "evidence": str(evidence_path),
+        "at": recorded_at,
+    }
+    if getattr(args, "authorization", None):
+        state["copilot_unavailable"]["authorization"] = str(Path(args.authorization).resolve())
+    state["copilot_review_pending"] = False
+    add_event(state, "copilot_review_unavailable", **state["copilot_unavailable"])
+    if snapshot_path is not None:
+        state["remote_feedback_snapshot"] = str(snapshot_path)
+        state["remote_feedback_fetched_at"] = recorded_at
+        state["stage"] = "remote_feedback_fetched"
+        add_event(state, "remote_feedback_fetched", snapshot=str(snapshot_path), copilot_unavailable=True)
+    save_state(path, state)
+    return state
+
+
+def add_quick_fix_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--review-impact", choices=("none", "material"))
+    parser.add_argument("--impact-evidence")
+
+
 def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     if path.exists():
@@ -311,9 +458,18 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
             expected_manager,
             "manager",
         )
+    mode = getattr(args, "mode", "full")
+    if mode not in {"full", "quick"}:
+        fail("mode must be full or quick")
     created = now_utc()
     state: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        "mode": mode,
+        "copilot_mode": getattr(args, "copilot", "legacy"),
+        "copilot_review_pending": False,
+        "copilot_review_requests": [],
+        "copilot_review_started_at": None,
+        "copilot_unavailable": None,
         "issue": issue.removeprefix("#"),
         "branch": branch,
         "manager_id": manager_id,
@@ -359,6 +515,7 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
         "worker": None,
         "worker_continuity": SUPPORTED_WORKER_CONTINUITY,
         "active_reviewer": None,
+        "typesafe_review": None,
         "used_reviewer_ids": [],
         "check_repair_count": 0,
         "check_repairs": [],
@@ -379,6 +536,8 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
         runtime=runtime_snapshot["runtime"] if runtime_snapshot else None,
         policy_version=runtime_snapshot["policy_version"] if runtime_snapshot else None,
     )
+    if state["copilot_mode"] == "off":
+        add_event(state, "copilot_disabled_by_user")
     save_state(path, state)
     return state
 
@@ -506,6 +665,31 @@ def cmd_record_judge(args: argparse.Namespace) -> dict[str, Any]:
     judge_provider = require_text(args.judge_provider, "judge-provider")
     judge_model = require_text(args.judge_model, "judge-model")
     judge_reasoning = require_text(args.judge_reasoning, "judge-reasoning")
+    expected_judge = strict_config(state)["roles"]["judge"]
+    if expected_judge.get("provider") == "typesafe-ai":
+        if judge_provider != "typesafe-ai":
+            fail("Judge provider must be typesafe-ai")
+        if judge_id != f"typesafe-ai:{evidence_key}":
+            fail("TypeSafe Judge identity must be keyed to the adjudication evidence")
+        judge_report_path = Path(require_text(args.report, "report")).resolve()
+        try:
+            judge_result = json.loads(judge_report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            fail(f"cannot read TypeSafe Judge report: {exc}")
+        if (
+            not isinstance(judge_result, dict)
+            or judge_result.get("schema_version") != 1
+            or judge_result.get("question_set") != "issue-to-merge-typesafe-judge-v1"
+            or judge_result.get("requested_model") != "jev-latest"
+            or judge_result.get("evidence_key") != evidence_key
+            or not isinstance(judge_result.get("options"), list)
+            or "unresolved" not in judge_result["options"]
+            or judge_result.get("choice") not in judge_result["options"]
+        ):
+            fail("report is not a valid TypeSafe Judge result for this evidence")
+        expected_outcome = "blocked" if judge_result.get("choice") == "unresolved" else "resolved"
+        if args.outcome != expected_outcome:
+            fail(f"TypeSafe Judge result requires outcome={expected_outcome}")
     require_route(
         judge_profile,
         judge_model,
@@ -696,6 +880,7 @@ def cmd_start_review(args: argparse.Namespace) -> dict[str, Any]:
     round_number = state["review_count"] + 1
     state["active_review"] = True
     state["active_review_number"] = round_number
+    state["typesafe_review"] = None
     state["active_reviewer"] = {
         "id": reviewer_id,
         "profile": reviewer_profile,
@@ -704,6 +889,10 @@ def cmd_start_review(args: argparse.Namespace) -> dict[str, Any]:
         "reasoning": reviewer_reasoning,
     }
     state["used_reviewer_ids"].append(reviewer_id)
+    if is_quick(state) and state["pr_url"]:
+        if state["stage"] not in {"pr_draft", "pr_ready", "remote_feedback_fetched", "remote_fix", "merge_ready", "awaiting_review"}:
+            fail("local re-review is not allowed in the current PR stage")
+        state.setdefault("quick_review_resume_stage", state["stage"])
     state["stage"] = "local_review"
     add_event(
         state,
@@ -730,6 +919,7 @@ def cmd_abort_review(args: argparse.Namespace) -> dict[str, Any]:
     state["active_review"] = False
     state["active_review_number"] = None
     state["active_reviewer"] = None
+    state["typesafe_review"] = None
     state["stage"] = "awaiting_review"
     add_event(
         state,
@@ -754,6 +944,10 @@ def cmd_finish_review(args: argparse.Namespace) -> dict[str, Any]:
     summary = require_text(args.summary, "summary")
     round_number = state["active_review_number"]
     reviewer = state["active_reviewer"] or {}
+    judge_route = strict_config(state)["roles"]["judge"] if is_strict_state(state) else {}
+    typesafe_review = state.get("typesafe_review")
+    if judge_route.get("provider") == "typesafe-ai" and not typesafe_review:
+        fail("record the mandatory TypeSafe assessment before finishing this review")
     if round_number != state["review_count"] + 1 or round_number > review_limit(state):
         fail("active review number is inconsistent with the completed count")
     state["review_count"] = round_number
@@ -770,7 +964,7 @@ def cmd_finish_review(args: argparse.Namespace) -> dict[str, Any]:
             "report": report,
             "at": now_utc(),
         }
-        state["stage"] = "local_review_complete"
+        state["stage"] = state.pop("quick_review_resume_stage", "local_review_complete")
     else:
         state["failed_review_cycles"] += 1
         state["needs_fix"] = True
@@ -805,6 +999,7 @@ def cmd_finish_review(args: argparse.Namespace) -> dict[str, Any]:
         outcome=args.outcome,
         report=report,
         summary=summary,
+        typesafe_review=typesafe_review,
         failed_review_cycles=state["failed_review_cycles"],
     )
     if state.get("pending_adjudication"):
@@ -816,6 +1011,48 @@ def cmd_finish_review(args: argparse.Namespace) -> dict[str, Any]:
             revision=state["pending_adjudication"]["revision"],
             report=state["pending_adjudication"]["report"],
         )
+    save_state(path, state)
+    return state
+
+
+def cmd_record_typesafe_review(args: argparse.Namespace) -> dict[str, Any]:
+    path = state_path(args)
+    state = load_state(path)
+    if not state["active_review"]:
+        fail("TypeSafe assessment requires an active review")
+    if not is_strict_state(state):
+        fail("TypeSafe assessment recording requires a frozen strict policy")
+    if strict_config(state)["roles"]["judge"].get("provider") != "typesafe-ai":
+        fail("the frozen policy does not route Judge through TypeSafe")
+    if state.get("typesafe_review"):
+        fail("TypeSafe assessment is already recorded for this review")
+    report_path = Path(require_text(args.report, "report")).resolve()
+    try:
+        result = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read TypeSafe assessment report: {exc}")
+    if (
+        not isinstance(result, dict)
+        or result.get("schema_version") != 1
+        or result.get("question_set") != "issue-to-merge-typesafe-review-v1"
+        or result.get("requested_model") != "jev-latest"
+        or result.get("review_kind") != "local"
+    ):
+        fail("report is not a valid TypeSafe local-review assessment")
+    state["typesafe_review"] = {
+        "report": str(report_path),
+        "case_id": result.get("case_id"),
+        "packet_sha256": result.get("packet_sha256"),
+        "recorded_at": now_utc(),
+    }
+    add_event(
+        state,
+        "typesafe_review_recorded",
+        round=state["active_review_number"],
+        report=str(report_path),
+        case_id=result.get("case_id"),
+        packet_sha256=result.get("packet_sha256"),
+    )
     save_state(path, state)
     return state
 
@@ -832,14 +1069,28 @@ def cmd_record_fix(args: argparse.Namespace) -> dict[str, Any]:
     require_worker_match(state, args)
     report = require_text(args.report, "report")
     validation = require_text(args.validation, "validation")
-    if is_strict_state(state) and state["review_count"] == review_limit(state):
-        fail("strict policy requires a reviewer PASS and no review rounds remain")
-    state["needs_fix"] = False
     final_fix = state["review_count"] == review_limit(state)
+    impact = quick_fix_impact(state, args, final_review_fix=final_fix)
+    if is_quick(state) and state["pr_url"]:
+        head_sha = require_text(getattr(args, "head_sha", None), "head-sha")
+        if head_sha == state["pr_head_sha"]:
+            fail("published local fix must record a new PR HEAD SHA")
+        state["pr_head_sha"] = head_sha
+        state["checks_passed"] = False
+        state["checks_evidence"] = None
+        state["review_threads_evidence"] = None
+        quick_published_fix(state, impact)
+    state["needs_fix"] = False
     if final_fix:
         state["local_review_closed"] = True
         state["final_unreviewed_fix"] = True
-        state["stage"] = "local_review_complete"
+        state["stage"] = state.pop("quick_review_resume_stage", "local_review_complete")
+    elif is_quick(state):
+        state["local_review_closed"] = impact == "none"
+        state["stage"] = (
+            state.pop("quick_review_resume_stage", "local_review_complete")
+            if impact == "none" else "awaiting_review"
+        )
     else:
         state["stage"] = "awaiting_review"
     add_event(state, "fix_recorded", after_round=state["review_count"], final_unreviewed_fix=final_fix, report=report, validation=validation)
@@ -852,7 +1103,7 @@ def cmd_record_pr(args: argparse.Namespace) -> dict[str, Any]:
     state = load_state(path)
     require_implementation_started(state, action="recording a PR")
     require_no_pending_adjudication(state, action="recording a PR")
-    if is_strict_state(state) and state.get("last_local_pass") is None:
+    if is_strict_state(state) and state.get("last_local_pass") is None and not state.get("final_unreviewed_fix") and not (is_quick(state) and (state.get("quick_fix_validation") or {}).get("impact") == "none"):
         fail("strict policy requires a configured-reviewer PASS before PR preparation")
     if not state["local_review_closed"] or state["active_review"] or state["needs_fix"]:
         fail("local review must be closed with no active review or pending fix")
@@ -884,6 +1135,7 @@ def cmd_mark_ready(args: argparse.Namespace) -> dict[str, Any]:
         fail("a recorded Draft PR is required before Ready for review")
     if state["remote_feedback_started_at"] is not None:
         fail("Ready timestamp is already recorded and cannot be reset")
+    state["ready_head_sha"] = state["pr_head_sha"]
     state["remote_feedback_started_at"] = now_utc()
     state["stage"] = "pr_ready"
     add_event(state, "pr_marked_ready", head_sha=state["pr_head_sha"])
@@ -896,15 +1148,26 @@ def cmd_mark_feedback_fetched(args: argparse.Namespace) -> dict[str, Any]:
     state = load_state(path)
     require_no_pending_adjudication(state, action="fetching remote feedback")
     snapshot = require_text(args.snapshot, "snapshot")
-    started_raw = state["remote_feedback_started_at"]
+    if state["active_review"] or state["needs_fix"] or not state["local_review_closed"]:
+        fail("complete the required local review before fetching feedback")
+    started_raw = state.get("copilot_review_started_at") or state["remote_feedback_started_at"]
     if started_raw is None:
         fail("PR Ready timestamp is missing")
     if state["remote_feedback_fetched_at"] is not None:
         fail("remote feedback was already fetched; a second fetch is forbidden")
     started = datetime.fromisoformat(started_raw)
     elapsed = (current_time() - started).total_seconds()
-    if elapsed < REMOTE_WAIT_SECONDS:
+    if copilot_enabled(state) and elapsed < REMOTE_WAIT_SECONDS:
         fail(f"remote feedback window has {REMOTE_WAIT_SECONDS - elapsed:.1f} seconds remaining")
+    if copilot_enabled(state) and (is_quick(state) or state.get("copilot_mode") == "auto" or state.get("copilot_review_requests")):
+        requests = state.get("copilot_review_requests", [])
+        if not requests:
+            fail("record the initial Copilot request before fetching feedback")
+        reviewed_head = require_text(getattr(args, "copilot_review_head", None), "copilot-review-head")
+        review_evidence = require_text(getattr(args, "copilot_review_evidence", None), "copilot-review-evidence")
+        if reviewed_head != requests[-1]["head_sha"]:
+            fail("Copilot review must cover the requested HEAD")
+        add_event(state, "copilot_review_completed", head_sha=reviewed_head, evidence=review_evidence)
     state["remote_feedback_fetched_at"] = now_utc()
     state["remote_feedback_snapshot"] = snapshot
     state["stage"] = "remote_feedback_fetched"
@@ -924,14 +1187,43 @@ def cmd_record_remote_assessment(args: argparse.Namespace) -> dict[str, Any]:
         fail("remote feedback assessment is already recorded")
     require_worker_match(state, args)
     report = require_text(args.report, "report")
-    state["remote_assessment"] = {"outcome": args.outcome, "report": report, "at": now_utc()}
+    judge_route = strict_config(state)["roles"]["judge"] if is_strict_state(state) else {}
+    typesafe_report = getattr(args, "typesafe_report", None)
+    if typesafe_report is not None and judge_route.get("provider") != "typesafe-ai":
+        fail("typesafe-report requires a selected strict typesafe-ai Judge")
+    if judge_route.get("provider") == "typesafe-ai":
+        typesafe_report = require_text(typesafe_report, "typesafe-report")
+        try:
+            result = json.loads(Path(typesafe_report).resolve().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            fail(f"cannot read TypeSafe remote-review assessment: {exc}")
+        if (
+            not isinstance(result, dict)
+            or result.get("schema_version") != 1
+            or result.get("question_set") != "issue-to-merge-typesafe-review-v1"
+            or result.get("requested_model") != "jev-latest"
+            or result.get("review_kind") != "remote"
+        ):
+            fail("report is not a valid TypeSafe remote-review assessment")
+    state["remote_assessment"] = {
+        "outcome": args.outcome,
+        "report": report,
+        "typesafe_report": typesafe_report,
+        "at": now_utc(),
+    }
     if args.outcome == "clean":
         state["stage"] = "merge_ready"
     elif args.outcome == "changes":
         state["stage"] = "remote_fix"
     else:
         state["stage"] = "blocked"
-    add_event(state, "remote_assessment_recorded", outcome=args.outcome, report=report)
+    add_event(
+        state,
+        "remote_assessment_recorded",
+        outcome=args.outcome,
+        report=report,
+        typesafe_report=typesafe_report,
+    )
     save_state(path, state)
     return state
 
@@ -963,7 +1255,7 @@ def cmd_record_remote_fix(args: argparse.Namespace) -> dict[str, Any]:
         fail("remote assessment or blocked resolution must require changes")
     if state["stage"] not in {"remote_fix", "merge_ready"}:
         fail("remote fix is not allowed in the current lifecycle stage")
-    if state["remote_fix_count"] > 0:
+    if state["remote_fix_count"] > 0 and not (is_quick(state) and state["stage"] == "remote_fix"):
         checks = state["checks_evidence"]
         if not checks or checks["result"] != "fail" or checks["head_sha"] != state["pr_head_sha"]:
             fail("another remote repair is allowed only after failed checks on the current PR HEAD")
@@ -973,6 +1265,8 @@ def cmd_record_remote_fix(args: argparse.Namespace) -> dict[str, Any]:
     if head_sha == state["pr_head_sha"]:
         fail("remote fix must record a new PR HEAD SHA")
     repair_number = state["remote_fix_count"] + 1
+    impact = quick_fix_impact(state, args)
+    quick_published_fix(state, impact)
     state["pr_head_sha"] = head_sha
     state["checks_passed"] = False
     state["checks_evidence"] = None
@@ -1006,6 +1300,8 @@ def cmd_record_check_repair(args: argparse.Namespace) -> dict[str, Any]:
     evidence = require_text(args.evidence, "evidence")
     previous_head_sha = state["pr_head_sha"]
     repair_number = state["check_repair_count"] + 1
+    impact = quick_fix_impact(state, args)
+    quick_published_fix(state, impact)
     state["pr_head_sha"] = head_sha
     state["checks_passed"] = False
     state["checks_evidence"] = None
@@ -1083,6 +1379,9 @@ def cmd_mark_merged(args: argparse.Namespace) -> dict[str, Any]:
     path = state_path(args)
     state = load_state(path)
     require_no_pending_adjudication(state, action="recording merge")
+    if is_quick(state):
+        if not state["local_review_closed"] or state["active_review"] or state["needs_fix"]:
+            fail("complete the required independent local review before merge")
     if state["stage"] != "merge_ready" or state["remote_assessment"] is None:
         fail("completed remote assessment is required before merge")
     if not state["checks_passed"]:
@@ -1215,6 +1514,8 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--issue", required=True)
     init.add_argument("--branch", required=True)
     init.add_argument("--manager-id", required=True)
+    init.add_argument("--mode", choices=("full", "quick"), default="full")
+    init.add_argument("--copilot", choices=("auto", "off"), default="auto")
     init.add_argument("--runtime-snapshot")
     init.add_argument("--manager-profile")
     init.add_argument("--manager-model")
@@ -1268,11 +1569,20 @@ def build_parser() -> argparse.ArgumentParser:
     finish.add_argument("--adjudication-evidence-key")
     finish.set_defaults(handler=cmd_finish_review)
 
+    typesafe_review = commands.add_parser(
+        "record-typesafe-review", help="record the required TypeSafe assessment for a local review"
+    )
+    add_state_file(typesafe_review)
+    typesafe_review.add_argument("--report", required=True)
+    typesafe_review.set_defaults(handler=cmd_record_typesafe_review)
+
     fix = commands.add_parser("record-fix", help="record the worker fix after findings")
     add_state_file(fix)
     add_worker_identity_args(fix)
     fix.add_argument("--report", required=True)
     fix.add_argument("--validation", required=True)
+    fix.add_argument("--head-sha")
+    add_quick_fix_args(fix)
     fix.set_defaults(handler=cmd_record_fix)
 
     request_judge = commands.add_parser(
@@ -1315,9 +1625,25 @@ def build_parser() -> argparse.ArgumentParser:
     add_state_file(ready)
     ready.set_defaults(handler=cmd_mark_ready)
 
-    fetched = commands.add_parser("mark-feedback-fetched", help="record the single remote fetch after 600 seconds")
+    copilot = commands.add_parser("record-copilot-request", help="record an optional Copilot review request for current HEAD")
+    add_state_file(copilot)
+    copilot.add_argument("--head-sha", required=True)
+    copilot.add_argument("--evidence", required=True)
+    copilot.set_defaults(handler=cmd_record_copilot_request)
+
+    unavailable = commands.add_parser("record-copilot-unavailable", help="disable unavailable Copilot for this Issue without fabricating completion")
+    add_state_file(unavailable)
+    unavailable.add_argument("--head-sha", required=True)
+    unavailable.add_argument("--evidence", required=True)
+    unavailable.add_argument("--authorization")
+    unavailable.add_argument("--snapshot")
+    unavailable.set_defaults(handler=cmd_record_copilot_unavailable)
+
+    fetched = commands.add_parser("mark-feedback-fetched", help="record feedback after enabled Copilot review or immediately when off/unavailable")
     add_state_file(fetched)
     fetched.add_argument("--snapshot", required=True)
+    fetched.add_argument("--copilot-review-head")
+    fetched.add_argument("--copilot-review-evidence")
     fetched.set_defaults(handler=cmd_mark_feedback_fetched)
 
     assessment = commands.add_parser("record-remote-assessment", help="record the one remote-feedback assessment")
@@ -1325,6 +1651,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_worker_identity_args(assessment)
     assessment.add_argument("--outcome", choices=("clean", "changes", "blocked"), required=True)
     assessment.add_argument("--report", required=True)
+    assessment.add_argument("--typesafe-report")
     assessment.set_defaults(handler=cmd_record_remote_assessment)
 
     resolution = commands.add_parser("resolve-blocked", help="record an explicit decision for blocked remote feedback")
@@ -1338,6 +1665,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_worker_identity_args(remote_fix)
     remote_fix.add_argument("--head-sha", required=True)
     remote_fix.add_argument("--validation", required=True)
+    add_quick_fix_args(remote_fix)
     remote_fix.set_defaults(handler=cmd_record_remote_fix)
 
     check_repair = commands.add_parser("record-check-repair", help="record an Issue-caused repair for failed checks on the current PR HEAD")
@@ -1346,6 +1674,7 @@ def build_parser() -> argparse.ArgumentParser:
     check_repair.add_argument("--head-sha", required=True)
     check_repair.add_argument("--validation", required=True)
     check_repair.add_argument("--evidence", required=True)
+    add_quick_fix_args(check_repair)
     check_repair.set_defaults(handler=cmd_record_check_repair)
 
     checks = commands.add_parser("record-checks", help="record required checks for current PR HEAD")

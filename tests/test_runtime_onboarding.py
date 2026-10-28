@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -335,9 +336,34 @@ class RuntimeOnboardingTests(unittest.TestCase):
                     config["roles"]["judge"][field] = None
                 with self.assertRaisesRegex(
                     runtime_config.ConfigError,
-                    "roles.judge must select an explicit model and reasoning",
+                    r"roles\.judge",
                 ):
                     runtime_config.validate_config(config)
+
+    def test_typesafe_judge_requires_jev_latest_and_structured_reasoning(self) -> None:
+        config = runtime_config.load_config(self.preset, "codex")
+        config["roles"]["judge"].update(
+            provider="typesafe-ai", model="jev-latest", reasoning="structured"
+        )
+        runtime_config.validate_config(config)
+        for field, value in (
+            ("model", None), ("reasoning", None),
+            ("model", "other-model"), ("reasoning", "high"),
+        ):
+            with self.subTest(field=field, value=value):
+                invalid = copy.deepcopy(config)
+                invalid["roles"]["judge"][field] = value
+                with self.assertRaises(runtime_config.ConfigError):
+                    runtime_config.validate_config(invalid)
+
+    def test_typesafe_preflight_requires_a_key_without_exposing_it(self) -> None:
+        config = runtime_config.load_config(self.preset, "codex")
+        config["roles"]["judge"].update(
+            provider="typesafe-ai", model="jev-latest", reasoning="structured"
+        )
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": ""}):
+            with self.assertRaisesRegex(runtime_config.ConfigError, "TYPESAFE_API_KEY"):
+                runtime_config.validate_capabilities(config, self.capabilities())
 
     def test_preflight_requires_actual_route_and_fast_evidence(self) -> None:
         runtime_config.select_runtime(self.selection, "codex", "tiered", self.preset)
@@ -511,6 +537,7 @@ class StrictLifecycleTests(unittest.TestCase):
                 "gpt-6-astra": ["high"],
             },
         }
+        self.capabilities = capabilities
         validation = runtime_config.validate_capabilities(config, capabilities)
         snapshot = {
             "snapshot_schema_version": 1,
@@ -531,12 +558,13 @@ class StrictLifecycleTests(unittest.TestCase):
     def call(self, function, **values):
         return function(argparse.Namespace(state_file=str(self.state), **values))
 
-    def init(self) -> None:
+    def init(self, mode="full") -> None:
         self.call(
             review_cycle.cmd_init,
             issue="41",
             branch="agent/issue-41",
             manager_id="manager-1",
+            mode=mode,
             runtime_snapshot=str(self.snapshot),
             manager_profile="manager",
             manager_model="gpt-5.6-sol",
@@ -582,8 +610,8 @@ class StrictLifecycleTests(unittest.TestCase):
             "reviewer_reasoning": "high",
         }
 
-    def prepare_worker(self) -> None:
-        self.init()
+    def prepare_worker(self, mode="full") -> None:
+        self.init(mode=mode)
         self.call(
             review_cycle.cmd_record_assessment,
             affected_modules="runtime resolver and state helper",
@@ -659,7 +687,7 @@ class StrictLifecycleTests(unittest.TestCase):
                 **self.reviewer_args("reviewer-1"),
             )
 
-    def test_second_changes_requires_separate_judge_and_pass_remains_required(self) -> None:
+    def test_final_changes_requires_judge_then_tested_fix_without_another_review(self) -> None:
         snapshot = json.loads(self.snapshot.read_text(encoding="utf-8"))
         snapshot["effective_config"]["roles"]["judge"]["model"] = "customer-judge"
         snapshot["effective_config"]["roles"]["judge"]["reasoning"] = "xhigh"
@@ -751,13 +779,6 @@ class StrictLifecycleTests(unittest.TestCase):
             report="judge.md",
             outcome="resolved",
         )
-        with self.assertRaisesRegex(SystemExit, "requires a reviewer PASS"):
-            self.call(
-                review_cycle.cmd_record_fix,
-                **self.worker_args(),
-                report="fix-2.md",
-                validation="tests passed",
-            )
         with self.assertRaisesRegex(SystemExit, "reviewer PASS"):
             self.call(
                 review_cycle.cmd_record_pr,
@@ -765,6 +786,95 @@ class StrictLifecycleTests(unittest.TestCase):
                 head_sha="abc",
                 closing_reference="Closes #41",
             )
+        state = self.call(
+            review_cycle.cmd_record_fix,
+            **self.worker_args(),
+            report="fix-2.md",
+            validation="tests passed",
+        )
+        self.assertTrue(state["local_review_closed"])
+        self.assertTrue(state["final_unreviewed_fix"])
+        self.assertEqual(state["last_review_outcome"], "changes")
+        self.assertIsNone(state["last_local_pass"])
+        with self.assertRaisesRegex(SystemExit, "already closed"):
+            self.call(review_cycle.cmd_start_review, **self.reviewer_args("extra"))
+        self.call(
+            review_cycle.cmd_record_pr,
+            url="https://example.test/pr/1",
+            head_sha="fixed-head",
+            closing_reference="Closes #41",
+        )
+
+    @patch.dict("os.environ", {"TYPESAFE_API_KEY": "fixture-only-no-network"})
+    def test_typesafe_final_fix_closes_full_and_quick_at_configured_limit(self) -> None:
+        for mode in ("full", "quick"):
+            for limit in (1, 2):
+                with self.subTest(mode=mode, limit=limit):
+                    self.state = self.directory / f"{mode}-{limit}.json"
+                    snapshot = json.loads(self.snapshot.read_text(encoding="utf-8"))
+                    config = snapshot["effective_config"]
+                    config["policy"]["review_limit"] = limit
+                    config["roles"]["judge"].update(
+                        provider="typesafe-ai", model="jev-latest", reasoning="structured"
+                    )
+                    snapshot["host_validation"] = runtime_config.validate_capabilities(
+                        config, self.capabilities
+                    )
+                    self.snapshot.write_text(json.dumps(snapshot), encoding="utf-8")
+                    self.prepare_worker(mode=mode)
+                    for number in range(1, limit + 1):
+                        self.call(review_cycle.cmd_start_review, **self.reviewer_args(f"reviewer-{number}"))
+                        assessment = self.directory / "typesafe-review.json"
+                        assessment.write_text(json.dumps({
+                            "schema_version": 1,
+                            "question_set": "issue-to-merge-typesafe-review-v1",
+                            "requested_model": "jev-latest",
+                            "review_kind": "local",
+                        }), encoding="utf-8")
+                        self.call(review_cycle.cmd_record_typesafe_review, report=str(assessment))
+                        key = f"review-cycle-{number}"
+                        self.call(
+                            review_cycle.cmd_finish_review, outcome="changes",
+                            report="review.md", summary="mapped reproducible defect",
+                            adjudication_evidence_key=key,
+                        )
+                        fix = dict(
+                            **self.worker_args(), report="fix.md", validation="focused tests passed",
+                            review_impact="material", impact_evidence="behavior regression and diff",
+                        )
+                        if number >= 2:
+                            with self.assertRaisesRegex(SystemExit, "pending adjudication"):
+                                self.call(review_cycle.cmd_record_fix, **fix)
+                            judge = self.directory / "typesafe-judge.json"
+                            judge.write_text(json.dumps({
+                                "schema_version": 1,
+                                "question_set": "issue-to-merge-typesafe-judge-v1",
+                                "requested_model": "jev-latest", "evidence_key": key,
+                                "options": ["repair", "unresolved"], "choice": "repair",
+                            }), encoding="utf-8")
+                            self.call(
+                                review_cycle.cmd_record_judge, judge_id=f"typesafe-ai:{key}",
+                                judge_profile="judge", judge_provider="typesafe-ai",
+                                judge_model="jev-latest", judge_reasoning="structured",
+                                evidence_key=key, report=str(judge), outcome="resolved",
+                            )
+                        before = self.state.read_bytes()
+                        with self.assertRaisesRegex(SystemExit, "validation must be nonempty"):
+                            self.call(review_cycle.cmd_record_fix, **{**fix, "validation": ""})
+                        self.assertEqual(before, self.state.read_bytes())
+                        state = self.call(review_cycle.cmd_record_fix, **fix)
+                        self.assertEqual(state["local_review_closed"], number == limit)
+                    self.assertTrue(state["final_unreviewed_fix"])
+                    self.assertEqual(state["review_count"], limit)
+                    self.assertEqual(state["last_review_outcome"], "changes")
+                    self.assertIsNone(state["last_local_pass"])
+                    with self.assertRaisesRegex(SystemExit, "already closed"):
+                        self.call(review_cycle.cmd_start_review, **self.reviewer_args("extra"))
+                    self.call(
+                        review_cycle.cmd_record_pr, url="https://example.test/pr/1",
+                        head_sha="fixed-head", closing_reference="Closes #41",
+                    )
+                    self.assertFalse(self.call(review_cycle.cmd_status)["checks_passed"])
 
     def test_declared_remote_disagreement_blocks_disposition_until_judge(self) -> None:
         self.prepare_worker()
@@ -789,6 +899,16 @@ class StrictLifecycleTests(unittest.TestCase):
         state["remote_feedback_started_at"] = "2020-01-01T00:00:00+00:00"
         self.state.write_text(json.dumps(state), encoding="utf-8")
         self.call(review_cycle.cmd_mark_feedback_fetched, snapshot="feedback.json")
+        before = self.state.read_bytes()
+        with self.assertRaisesRegex(SystemExit, "strict typesafe-ai Judge"):
+            self.call(
+                review_cycle.cmd_record_remote_assessment,
+                **self.worker_args(),
+                outcome="blocked",
+                report="remote.md",
+                typesafe_report="unselected-typesafe.json",
+            )
+        self.assertEqual(before, self.state.read_bytes())
         self.call(
             review_cycle.cmd_record_remote_assessment,
             **self.worker_args(),
